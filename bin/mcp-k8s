@@ -1,0 +1,9 @@
+#!/usr/bin/env perl
+# PODNAME: mcp-k8s
+# ABSTRACT: MCP Server for Kubernetes with RBAC-aware dynamic tools
+
+use strict;
+use warnings;
+use MCP::K8s;
+
+MCP::K8s->run_stdio;

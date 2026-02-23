@@ -1,0 +1,7 @@
+{{$NEXT}}
+
+  - Initial release
+  - RBAC-aware dynamic tool discovery
+  - 7 MCP tools: permissions, list, get, create, patch, delete, logs
+  - SelfSubjectRulesReview-based permission discovery
+  - Kubeconfig-based authentication
