@@ -8,16 +8,78 @@ use namespace::clean;
 
 our $VERSION = '0.001';
 
+=head1 SYNOPSIS
+
+  use MCP::K8s::Permissions;
+
+  my $perms = MCP::K8s::Permissions->new(
+    api        => $kubernetes_rest_api,
+    namespaces => ['default', 'production'],
+  );
+
+  # Discover what the current service account can do
+  $perms->discover;
+
+  # Check specific permissions
+  if ($perms->can_do('list', 'pods', 'default')) {
+    say "Can list pods in default namespace";
+  }
+
+  # Get all resources allowed for a verb
+  my @listable = $perms->allowed_resources('list', 'default');
+
+  # Check pod log access
+  if ($perms->can_read_logs('production')) {
+    say "Can read pod logs in production";
+  }
+
+  # Human-readable summary (Markdown formatted)
+  say $perms->summary;
+
+=head1 DESCRIPTION
+
+MCP::K8s::Permissions encapsulates Kubernetes RBAC discovery using
+the C<SelfSubjectRulesReview> API. On L</discover>, it submits a
+review request for each configured namespace (plus cluster scope),
+parses the returned C<ResourceRule> entries, and builds an internal
+permission map.
+
+This map powers permission checks throughout L<MCP::K8s> — every tool
+verifies access before making API calls, providing clear error messages
+when a service account lacks the required permissions.
+
+B<Wildcard handling:> The C<*> wildcard in verbs or resources is expanded
+at discovery time. A rule with C<verbs: ["*"]> grants all standard Kubernetes
+verbs (get, list, watch, create, update, patch, delete). A rule with
+C<resources: ["*"]> grants access to all resource types.
+
+=cut
+
 has api => (
   is       => 'ro',
   required => 1,
   weak_ref => 1,
 );
 
+=attr api
+
+Required. A L<Kubernetes::REST> instance used to submit C<SelfSubjectRulesReview>
+requests. Stored as a weak reference to avoid circular references with
+the parent L<MCP::K8s> object.
+
+=cut
+
 has namespaces => (
   is       => 'ro',
   required => 1,
 );
+
+=attr namespaces
+
+Required. ArrayRef of namespace names to discover permissions for. Typically
+comes from C<$ENV{MCP_K8S_NAMESPACES}> or auto-discovery in L<MCP::K8s>.
+
+=cut
 
 has _rules => (
   is      => 'rw',
@@ -27,6 +89,21 @@ has _rules => (
 sub discover {
   my ($self) = @_;
 
+=method discover
+
+  $perms->discover;
+
+Submit C<SelfSubjectRulesReview> requests for each namespace in L</namespaces>
+plus an empty-namespace request for cluster-scoped resources. Populates the
+internal permission map.
+
+Returns C<$self> for chaining.
+
+Failures for individual namespaces are warned and skipped — a single
+inaccessible namespace won't prevent discovery of the others.
+
+=cut
+
   my %rules;
 
   for my $ns (@{ $self->namespaces }) {
@@ -35,7 +112,7 @@ sub discover {
       warn "Failed to discover permissions for namespace '$ns': $@";
       next;
     }
-    $rules{$ns} = $ns_rules;
+    $rules{$ns} = $ns_rules if keys %$ns_rules;
   }
 
   # Also try cluster-scoped discovery (empty namespace)
@@ -69,8 +146,7 @@ sub _discover_namespace {
     my @resources = @{ $rule->resources // [] };
 
     for my $resource (@resources) {
-      # Skip subresources for now (e.g. "pods/log")
-      # We handle pods/log specifically in the logs tool
+      # Skip subresources except pods/log which we handle specifically
       next if $resource =~ m{/} && $resource ne 'pods/log';
 
       for my $verb (@verbs) {
@@ -98,6 +174,22 @@ sub _discover_namespace {
 
 sub can_do {
   my ($self, $verb, $resource_plural, $namespace) = @_;
+
+=method can_do
+
+  my $allowed = $perms->can_do('list', 'pods', 'default');
+  my $allowed = $perms->can_do('create', 'deployments', 'production');
+
+Check whether the current service account is allowed to perform C<$verb>
+on C<$resource_plural> in C<$namespace>. Returns a boolean.
+
+C<$namespace> defaults to C<''> (cluster scope) if not provided.
+
+Handles wildcards: if the account has C<*> on verbs or resources for the
+given namespace, the check succeeds.
+
+=cut
+
   $namespace //= '';
 
   my $ns_rules = $self->_rules->{$namespace};
@@ -116,6 +208,20 @@ sub can_do {
 
 sub allowed_resources {
   my ($self, $verb, $namespace) = @_;
+
+=method allowed_resources
+
+  my @resources = $perms->allowed_resources('list', 'default');
+  # => ('configmaps', 'deployments', 'pods', 'services')
+
+Return a sorted list of resource plurals that are allowed for C<$verb> in
+C<$namespace>. If the account has wildcard resource access, C<'*'> is
+prepended to the list.
+
+Subresources (e.g. C<pods/log>) are excluded from the returned list.
+
+=cut
+
   $namespace //= '';
 
   my $ns_rules = $self->_rules->{$namespace};
@@ -142,11 +248,33 @@ sub allowed_resources {
 
 sub allowed_namespaces {
   my ($self) = @_;
+
+=method allowed_namespaces
+
+  my @ns = $perms->allowed_namespaces;
+
+Return a sorted list of namespaces that have any discovered permissions.
+Excludes the cluster scope (empty string).
+
+=cut
+
   return grep { $_ ne '' } sort keys %{ $self->_rules };
 }
 
 sub can_read_logs {
   my ($self, $namespace) = @_;
+
+=method can_read_logs
+
+  if ($perms->can_read_logs('default')) { ... }
+
+Check whether pod log access is available in C<$namespace>. This checks
+for the C<pods/log> subresource C<get> permission, wildcard resource
+access, or general C<pods> C<get> access (which in practice implies
+log access on most clusters).
+
+=cut
+
   $namespace //= '';
   my $ns_rules = $self->_rules->{$namespace};
   return 0 unless $ns_rules;
@@ -163,6 +291,34 @@ sub can_read_logs {
 
 sub summary {
   my ($self) = @_;
+
+=method summary
+
+  my $text = $perms->summary;
+
+Generate a human-readable Markdown-formatted summary of all discovered
+permissions. Organized by namespace, with verbs grouped and their
+allowed resources listed.
+
+This is the output returned by the C<k8s_permissions> MCP tool — designed
+to give an LLM a quick overview of what it can and cannot do.
+
+Example output:
+
+  # Kubernetes RBAC Permissions
+
+  ## Namespace: default
+
+  - **get**: deployments, pods, services
+  - **list**: deployments, pods, services
+  - **create**: configmaps
+  - **delete**: configmaps
+
+  ## Namespace: admin
+
+  Full access (all resources, all verbs)
+
+=cut
 
   my @lines;
   push @lines, "# Kubernetes RBAC Permissions\n";
@@ -221,3 +377,15 @@ sub summary {
 }
 
 1;
+
+=seealso
+
+L<MCP::K8s> — Main module that uses this for tool registration
+
+L<IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview> — The K8s API object used for discovery
+
+L<IO::K8s::Api::Authorization::V1::ResourceRule> — Individual permission rules
+
+L<https://kubernetes.io/docs/reference/access-authn-authz/rbac/> — Kubernetes RBAC documentation
+
+=cut

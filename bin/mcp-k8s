@@ -7,3 +7,116 @@ use warnings;
 use MCP::K8s;
 
 MCP::K8s->run_stdio;
+
+__END__
+
+=head1 SYNOPSIS
+
+  # Start with default kubeconfig and context:
+  $ mcp-k8s
+
+  # Specify a context:
+  $ MCP_K8S_CONTEXT=my-cluster mcp-k8s
+
+  # Restrict to specific namespaces:
+  $ MCP_K8S_NAMESPACES=default,staging mcp-k8s
+
+  # Full example:
+  $ KUBECONFIG=/path/to/config MCP_K8S_CONTEXT=prod MCP_K8S_NAMESPACES=app mcp-k8s
+
+=head1 DESCRIPTION
+
+C<mcp-k8s> starts an MCP (Model Context Protocol) server on stdio that
+gives AI assistants access to a Kubernetes cluster. It uses the current
+kubeconfig to connect and dynamically discovers RBAC permissions to
+determine which tools to expose.
+
+This is the entry point for integrating Kubernetes with Claude Desktop,
+Claude Code, or any MCP-compatible AI assistant.
+
+=head1 CONFIGURATION
+
+The server is configured entirely through environment variables — no
+command-line flags needed. This makes it easy to configure in MCP
+client settings (JSON).
+
+=head2 Environment Variables
+
+=over 4
+
+=item C<KUBECONFIG>
+
+Path to kubeconfig file. Defaults to C<~/.kube/config>.
+
+=item C<MCP_K8S_CONTEXT>
+
+Which kubeconfig context to use. Defaults to the kubeconfig's
+C<current-context>.
+
+=item C<MCP_K8S_NAMESPACES>
+
+Comma-separated list of namespaces. Defaults to auto-discovery
+(all namespaces the service account can list).
+
+=back
+
+=head1 CLAUDE DESKTOP
+
+Add to C<~/.config/claude/claude_desktop_config.json>:
+
+  {
+    "mcpServers": {
+      "kubernetes": {
+        "command": "mcp-k8s",
+        "env": {
+          "MCP_K8S_CONTEXT": "my-cluster",
+          "MCP_K8S_NAMESPACES": "default,production"
+        }
+      }
+    }
+  }
+
+=head1 CLAUDE CODE
+
+Add to your project's C<.mcp.json>:
+
+  {
+    "mcpServers": {
+      "kubernetes": {
+        "command": "mcp-k8s",
+        "env": {
+          "MCP_K8S_CONTEXT": "dev-cluster"
+        }
+      }
+    }
+  }
+
+=head1 TOOLS PROVIDED
+
+The server registers 7 MCP tools, each gated by RBAC permissions:
+
+=over 4
+
+=item B<k8s_permissions> — Show what the service account can do
+
+=item B<k8s_list> — List resources (Pods, Deployments, Services, ...)
+
+=item B<k8s_get> — Get a single resource (summary, JSON, or YAML)
+
+=item B<k8s_create> — Create a resource from a manifest
+
+=item B<k8s_patch> — Partially update a resource
+
+=item B<k8s_delete> — Delete a resource
+
+=item B<k8s_logs> — Get pod container logs
+
+=back
+
+=seealso
+
+L<MCP::K8s> — The module that powers this script
+
+L<Kubernetes::REST::Kubeconfig> — How kubeconfig is parsed
+
+=cut

@@ -11,7 +11,70 @@ use namespace::clean;
 
 our $VERSION = '0.001';
 
-# Map common resource short names to their plural form for RBAC checking
+=head1 SYNOPSIS
+
+  # Start the MCP server on stdio (for Claude Desktop, Claude Code, etc.)
+  use MCP::K8s;
+  MCP::K8s->run_stdio;
+
+  # Or use the included script:
+  $ mcp-k8s
+
+  # Configure via environment variables:
+  $ export MCP_K8S_CONTEXT="my-cluster"
+  $ export MCP_K8S_NAMESPACES="default,production"
+  $ mcp-k8s
+
+  # Programmatic usage with custom API:
+  use MCP::K8s;
+  my $k8s = MCP::K8s->new(
+    api        => $my_kubernetes_rest_instance,
+    namespaces => ['default', 'staging'],
+  );
+  $k8s->server->to_stdio;
+
+=head1 DESCRIPTION
+
+MCP::K8s provides an MCP (Model Context Protocol) server that gives AI
+assistants like Claude access to Kubernetes clusters.
+
+The key innovation: B<the server dynamically discovers what the connected
+service account can do via RBAC> and only exposes those capabilities as
+MCP tools. A read-only service account gets read-only tools; a cluster-admin
+gets everything. Tool descriptions include the specific resources and
+namespaces available, so the LLM always knows exactly what it can do.
+
+=head2 How it works
+
+=over 4
+
+=item 1. B<Connect> — Reads kubeconfig (or uses provided API client) to connect to a Kubernetes cluster
+
+=item 2. B<Discover> — Submits C<SelfSubjectRulesReview> requests to discover RBAC permissions per namespace
+
+=item 3. B<Register> — Creates MCP tools with dynamic descriptions reflecting actual permissions
+
+=item 4. B<Serve> — Runs the MCP protocol over stdio, checking permissions on every tool call
+
+=back
+
+=head2 Why generic tools?
+
+Kubernetes has 50+ built-in resource types plus unlimited Custom Resources.
+Instead of creating hundreds of specific tools (C<list_pods>, C<get_deployment>,
+C<delete_configmap>...), MCP::K8s uses 7 generic tools with a C<resource>
+parameter — the same pattern as C<kubectl get>, C<kubectl delete>, etc.
+This keeps the tool count manageable for MCP clients while supporting
+every resource type including CRDs.
+
+Built on top of L<Kubernetes::REST> (API client), L<IO::K8s> (typed objects),
+and L<MCP::Server> (protocol implementation).
+
+=cut
+
+# Map common resource short names to their plural form for RBAC checking.
+# This is necessary because RBAC rules use plural resource names (e.g. "pods")
+# while the Kubernetes::REST API accepts singular Kind names (e.g. "Pod").
 my %RESOURCE_PLURALS = (
   Pod                   => 'pods',
   Service               => 'services',
@@ -48,11 +111,34 @@ has context_name => (
   predicate => 1,
 );
 
+=attr context_name
+
+Optional. Kubeconfig context name to use. Read from C<$ENV{MCP_K8S_CONTEXT}>
+by default. If not set, the kubeconfig's C<current-context> is used.
+
+=cut
+
 has namespaces => (
   is      => 'ro',
   lazy    => 1,
   builder => '_build_namespaces',
 );
+
+=attr namespaces
+
+ArrayRef of namespace names to operate on. Configured via:
+
+=over 4
+
+=item * C<$ENV{MCP_K8S_NAMESPACES}> — comma-separated list (e.g. C<"default,production">)
+
+=item * Auto-discovery — lists all namespaces from the cluster
+
+=item * Fallback — C<['default']> if discovery fails
+
+=back
+
+=cut
 
 has api => (
   is      => 'ro',
@@ -60,11 +146,26 @@ has api => (
   builder => '_build_api',
 );
 
+=attr api
+
+L<Kubernetes::REST> instance for cluster communication. Built automatically
+from kubeconfig using L<Kubernetes::REST::Kubeconfig>. Can be provided
+directly for testing or custom configurations.
+
+=cut
+
 has permissions => (
   is      => 'ro',
   lazy    => 1,
   builder => '_build_permissions',
 );
+
+=attr permissions
+
+L<MCP::K8s::Permissions> instance holding the discovered RBAC permissions.
+Built and populated automatically on first access via C<SelfSubjectRulesReview>.
+
+=cut
 
 has json => (
   is      => 'ro',
@@ -74,11 +175,26 @@ has json => (
   },
 );
 
+=attr json
+
+L<JSON::MaybeXS> encoder instance. Configured with C<utf8>, C<pretty>,
+C<canonical>, and C<convert_blessed> for consistent, readable output.
+
+=cut
+
 has server => (
   is      => 'ro',
   lazy    => 1,
   builder => '_build_server',
 );
+
+=attr server
+
+L<MCP::Server> instance with all MCP tools registered. Built lazily,
+which triggers RBAC discovery and tool registration. See L</MCP TOOLS>
+for the full list of registered tools.
+
+=cut
 
 sub _build_api {
   my ($self) = @_;
@@ -123,6 +239,18 @@ sub _to_json {
 
 sub _resource_plural {
   my ($self, $resource) = @_;
+
+=method _resource_plural
+
+  my $plural = $self->_resource_plural('Pod');       # => 'pods'
+  my $plural = $self->_resource_plural('Ingress');   # => 'ingresses'
+
+Convert a Kubernetes Kind name (e.g. C<Pod>, C<Deployment>) to its plural
+form used in RBAC rules (e.g. C<pods>, C<deployments>). Uses a built-in
+map for common resources, with a fallback heuristic for unknown types.
+
+=cut
+
   return $RESOURCE_PLURALS{$resource} if $RESOURCE_PLURALS{$resource};
   # Fallback: lowercase + simple pluralization
   my $plural = lc($resource);
@@ -133,6 +261,18 @@ sub _resource_plural {
 
 sub _resolve_namespace {
   my ($self, $args) = @_;
+
+=method _resolve_namespace
+
+  my $ns = $self->_resolve_namespace($args);
+
+Resolve the namespace for a tool call. If C<< $args->{namespace} >> is
+provided, uses that. Otherwise, if only one namespace is accessible,
+auto-fills it. Returns C<undef> if the namespace cannot be determined
+(the tool should handle this case).
+
+=cut
+
   my $ns = $args->{namespace};
   return $ns if defined $ns && length $ns;
 
@@ -145,6 +285,21 @@ sub _resolve_namespace {
 
 sub _format_resource_summary {
   my ($self, $obj) = @_;
+
+=method _format_resource_summary
+
+  my $summary = $self->_format_resource_summary($io_k8s_object);
+
+Extract a concise summary hashref from an L<IO::K8s> object, suitable for
+LLM consumption. Includes metadata (name, namespace, labels, creation time),
+kind, status fields (phase, replicas, conditions), and key spec fields
+(containers, ports, type).
+
+The summary is intentionally compact — for full details, the C<k8s_get>
+tool with C<output =E<gt> 'json'> should be used.
+
+=cut
+
   my %summary;
 
   if ($obj->can('metadata') && $obj->metadata) {
@@ -194,6 +349,16 @@ sub _format_resource_summary {
 
 sub _format_list {
   my ($self, $items) = @_;
+
+=method _format_list
+
+  my $summaries = $self->_format_list($list->items);
+
+Format an arrayref of L<IO::K8s> objects into an arrayref of summary
+hashrefs using L</_format_resource_summary>.
+
+=cut
+
   my @summaries;
   for my $item (@{ $items // [] }) {
     push @summaries, $self->_format_resource_summary($item);
@@ -219,6 +384,139 @@ sub _available_resources_desc {
   }
   return join('; ', @parts) || 'none discovered';
 }
+
+=head1 MCP TOOLS
+
+All tools are registered on the L</server> during construction. Each tool
+checks RBAC permissions before executing and returns clear error messages
+on denial. Tool descriptions dynamically include which resources and
+namespaces are available.
+
+=head2 k8s_permissions
+
+Show what the current Kubernetes service account is allowed to do. Returns
+a Markdown-formatted RBAC summary. B<The LLM should call this first> to
+understand its capabilities.
+
+No parameters required.
+
+=head2 k8s_list
+
+List Kubernetes resources with optional filtering.
+
+B<Parameters:>
+
+=over 4
+
+=item C<resource> (string, B<required>) — Resource type: C<Pod>, C<Deployment>, C<Service>, C<ConfigMap>, etc.
+
+=item C<namespace> (string) — Target namespace. Auto-detected if only one is accessible.
+
+=item C<label_selector> (string) — Label filter, e.g. C<app=web,env=prod>
+
+=item C<field_selector> (string) — Field filter, e.g. C<status.phase=Running>
+
+=back
+
+Returns JSON with C<count> and C<items> (array of resource summaries).
+
+=head2 k8s_get
+
+Get a single Kubernetes resource by name.
+
+B<Parameters:>
+
+=over 4
+
+=item C<resource> (string, B<required>) — Resource type
+
+=item C<name> (string, B<required>) — Resource name
+
+=item C<namespace> (string) — Target namespace
+
+=item C<output> (string) — Format: C<summary> (default), C<json>, or C<yaml>
+
+=back
+
+=head2 k8s_create
+
+Create a Kubernetes resource from a manifest. The C<apiVersion> and C<kind>
+fields are auto-populated from the resource type via L<IO::K8s>.
+
+B<Parameters:>
+
+=over 4
+
+=item C<resource> (string, B<required>) — Resource type
+
+=item C<manifest> (object, B<required>) — Resource manifest (metadata, spec, etc.)
+
+=item C<namespace> (string) — Target namespace (also auto-populated in metadata)
+
+=back
+
+Returns JSON confirmation with the created resource name.
+
+=head2 k8s_patch
+
+Partially update a Kubernetes resource.
+
+B<Parameters:>
+
+=over 4
+
+=item C<resource> (string, B<required>) — Resource type
+
+=item C<name> (string, B<required>) — Resource name
+
+=item C<patch> (object, B<required>) — Fields to change
+
+=item C<namespace> (string) — Target namespace
+
+=item C<patch_type> (string) — Strategy: C<strategic> (default), C<merge>, or C<json>
+
+=back
+
+See L<Kubernetes::REST/patch> for details on patch strategies.
+
+=head2 k8s_delete
+
+Delete a Kubernetes resource by name.
+
+B<Parameters:>
+
+=over 4
+
+=item C<resource> (string, B<required>) — Resource type
+
+=item C<name> (string, B<required>) — Resource name
+
+=item C<namespace> (string) — Target namespace
+
+=back
+
+=head2 k8s_logs
+
+Get container logs from a pod. Essential for debugging. Uses the raw
+C</api/v1/namespaces/{ns}/pods/{name}/log> endpoint.
+
+B<Parameters:>
+
+=over 4
+
+=item C<name> (string, B<required>) — Pod name
+
+=item C<namespace> (string) — Target namespace (B<required> for logs)
+
+=item C<container> (string) — Container name (required for multi-container pods)
+
+=item C<tail_lines> (integer) — Number of lines from end (default: 100)
+
+=item C<previous> (boolean) — Get logs from previous container instance
+
+=back
+
+=cut
 
 sub _build_server {
   my ($self) = @_;
@@ -276,7 +574,6 @@ sub _build_server {
       my $ns = $self->_resolve_namespace($args);
       my $plural = $self->_resource_plural($resource);
 
-      # Check permission
       unless ($self->permissions->can_do('list', $plural, $ns // '')) {
         return "Permission denied: cannot list $resource" . ($ns ? " in namespace $ns" : "");
       }
@@ -350,7 +647,6 @@ sub _build_server {
       if ($output eq 'json') {
         return $self->_to_json($obj->TO_JSON);
       } elsif ($output eq 'yaml') {
-        # YAML output via JSON round-trip
         eval { require YAML::XS };
         if ($@) {
           return $self->_to_json($obj->TO_JSON);
@@ -591,7 +887,6 @@ sub _build_server {
       $params{container} = $container if $container;
       $params{previous}  = 'true' if $previous;
 
-      # Use raw _request on the api object
       my $response = eval { $self->api->_request('GET', $path, undef, parameters => \%params) };
       return "Failed to get logs for pod/$name: $@" if $@;
 
@@ -609,84 +904,27 @@ sub _build_server {
 
 sub run_stdio {
   my ($self) = @_;
+
+=method run_stdio
+
+  # As class method:
+  MCP::K8s->run_stdio;
+
+  # As instance method:
+  my $k8s = MCP::K8s->new(%opts);
+  $k8s->run_stdio;
+
+Start the MCP server on stdio. If called as a class method, creates a
+new instance first. This is the main entry point used by the C<mcp-k8s>
+script.
+
+=cut
+
   $self = $self->new unless ref $self;
   $self->server->to_stdio;
 }
 
 1;
-
-__END__
-
-=head1 SYNOPSIS
-
-  # As stdio MCP server (for Claude Desktop, Claude Code, etc.)
-  use MCP::K8s;
-  MCP::K8s->run_stdio;
-
-  # Or with the included script:
-  # mcp-k8s
-
-  # Environment variables:
-  export MCP_K8S_CONTEXT="my-cluster"
-  export MCP_K8S_NAMESPACES="default,production"
-
-=head1 DESCRIPTION
-
-MCP::K8s provides an MCP (Model Context Protocol) server that gives AI
-assistants like Claude access to Kubernetes clusters.
-
-The key innovation: the server dynamically discovers what the connected
-service account can do via RBAC (using SelfSubjectRulesReview) and only
-exposes those capabilities as MCP tools. A read-only service account gets
-read-only tools; a cluster-admin gets everything.
-
-Built on top of L<Kubernetes::REST> (API client) and L<IO::K8s> (typed
-objects).
-
-=head1 MCP TOOLS
-
-=head2 k8s_permissions
-
-Show RBAC permissions for the current service account. Call this first to
-understand what operations are available.
-
-=head2 k8s_list
-
-List Kubernetes resources with optional label and field selectors.
-
-B<Parameters:> C<resource> (required), C<namespace>, C<label_selector>, C<field_selector>
-
-=head2 k8s_get
-
-Get a single Kubernetes resource by name with summary, JSON, or YAML output.
-
-B<Parameters:> C<resource> (required), C<name> (required), C<namespace>, C<output> (summary|json|yaml)
-
-=head2 k8s_create
-
-Create a Kubernetes resource from a manifest. apiVersion and kind are
-auto-populated from the resource type.
-
-B<Parameters:> C<resource> (required), C<manifest> (required), C<namespace>
-
-=head2 k8s_patch
-
-Partially update a Kubernetes resource using strategic merge, JSON merge,
-or JSON patch.
-
-B<Parameters:> C<resource> (required), C<name> (required), C<patch> (required), C<namespace>, C<patch_type> (strategic|merge|json)
-
-=head2 k8s_delete
-
-Delete a Kubernetes resource by name.
-
-B<Parameters:> C<resource> (required), C<name> (required), C<namespace>
-
-=head2 k8s_logs
-
-Get pod logs. Essential for debugging.
-
-B<Parameters:> C<name> (required), C<namespace>, C<container>, C<tail_lines>, C<previous>
 
 =head1 ENVIRONMENT
 
@@ -694,19 +932,25 @@ B<Parameters:> C<name> (required), C<namespace>, C<container>, C<tail_lines>, C<
 
 =item C<KUBECONFIG>
 
-Path to kubeconfig file. Default: C<~/.kube/config>
+Path to kubeconfig file. Default: C<~/.kube/config>.
+Standard Kubernetes environment variable, also used by C<kubectl>.
 
 =item C<MCP_K8S_CONTEXT>
 
-Kubeconfig context to use. Default: current-context from kubeconfig.
+Kubeconfig context to use. Default: the kubeconfig's C<current-context>.
 
 =item C<MCP_K8S_NAMESPACES>
 
-Comma-separated list of namespaces. Default: auto-discovered from cluster.
+Comma-separated list of namespaces to operate on.
+Default: auto-discovered from the cluster (lists all namespaces the
+service account can see). Falls back to C<default> if discovery fails.
 
 =back
 
 =head1 CLAUDE DESKTOP INTEGRATION
+
+Add this to your Claude Desktop MCP configuration
+(C<~/.config/claude/claude_desktop_config.json>):
 
   {
     "mcpServers": {
@@ -720,8 +964,55 @@ Comma-separated list of namespaces. Default: auto-discovered from cluster.
     }
   }
 
+=head1 CLAUDE CODE INTEGRATION
+
+Add to your project's C<.mcp.json> or global MCP settings:
+
+  {
+    "mcpServers": {
+      "kubernetes": {
+        "command": "mcp-k8s",
+        "env": {
+          "MCP_K8S_CONTEXT": "dev-cluster"
+        }
+      }
+    }
+  }
+
+=head1 SECURITY CONSIDERATIONS
+
+=over 4
+
+=item * The server inherits the permissions of whatever kubeconfig context
+it connects with. Use a dedicated service account with minimal RBAC
+permissions for AI assistant access.
+
+=item * All tool calls check RBAC permissions B<before> executing. Even if
+the service account has broad permissions, the permission check provides
+a clear audit trail.
+
+=item * Secrets are supported as a resource type. If your service account
+can read secrets, the LLM will be able to read them too. Consider excluding
+C<secrets> from RBAC roles used for AI access.
+
+=back
+
 =seealso
 
-L<MCP::Server>, L<Kubernetes::REST>, L<IO::K8s>, L<MCP::K8s::Permissions>
+L<MCP::K8s::Permissions> — RBAC discovery engine
+
+L<MCP::Kubernetes> — Alias for this module
+
+L<Kubernetes::REST> — The underlying Kubernetes API client
+
+L<IO::K8s> — Typed Kubernetes resource objects
+
+L<MCP::Server> — MCP protocol implementation
+
+L<Kubernetes::REST::Kubeconfig> — Kubeconfig parsing
+
+L<https://modelcontextprotocol.io/> — Model Context Protocol specification
+
+L<https://kubernetes.io/docs/reference/access-authn-authz/rbac/> — Kubernetes RBAC
 
 =cut

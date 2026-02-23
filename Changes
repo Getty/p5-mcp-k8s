@@ -1,7 +1,15 @@
 {{$NEXT}}
 
   - Initial release
-  - RBAC-aware dynamic tool discovery
-  - 7 MCP tools: permissions, list, get, create, patch, delete, logs
-  - SelfSubjectRulesReview-based permission discovery
-  - Kubeconfig-based authentication
+  - RBAC-aware dynamic tool discovery via SelfSubjectRulesReview
+  - 7 MCP tools: k8s_permissions, k8s_list, k8s_get, k8s_create,
+    k8s_patch, k8s_delete, k8s_logs
+  - Kubeconfig-based authentication with context selection
+  - Dynamic tool descriptions reflecting actual RBAC permissions
+  - Wildcard handling for verbs and resources
+  - Auto-namespace detection (single namespace auto-fill)
+  - Pod log support via raw API endpoint
+  - MCP::Kubernetes alias module for CPAN discoverability
+  - Support for label and field selectors on list operations
+  - Multiple output formats for get: summary, JSON, YAML
+  - Three patch strategies: strategic merge, JSON merge, JSON patch
