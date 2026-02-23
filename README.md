@@ -99,6 +99,53 @@ This tells the LLM exactly what it can do without needing to call `k8s_permissio
 - All tool calls verify RBAC permissions **before** executing API calls.
 - If the service account can read Secrets, the LLM can too. Consider excluding `secrets` from AI service account roles.
 
+## Langertha Raider Integration
+
+Build an autonomous AI agent that manages your Kubernetes cluster using [Langertha::Raider](https://metacpan.org/pod/Langertha::Raider):
+
+```perl
+use IO::Async::Loop;
+use Future::AsyncAwait;
+use Net::Async::MCP;
+use Langertha::Engine::Anthropic;
+use Langertha::Raider;
+use MCP::K8s;
+
+my $k8s = MCP::K8s->new(namespaces => ['default', 'production']);
+
+my $loop = IO::Async::Loop->new;
+my $mcp = Net::Async::MCP->new(server => $k8s->server);
+$loop->add($mcp);
+
+async sub main {
+  await $mcp->initialize;
+
+  my $engine = Langertha::Engine::Anthropic->new(
+    api_key     => $ENV{ANTHROPIC_API_KEY},
+    model       => 'claude-sonnet-4-6',
+    mcp_servers => [$mcp],
+  );
+
+  my $raider = Langertha::Raider->new(
+    engine  => $engine,
+    mission => 'You are a Kubernetes operations assistant. '
+             . 'Always check permissions first, then help the user '
+             . 'investigate and manage their cluster.',
+  );
+
+  my $r1 = await $raider->raid_f('What can I do on this cluster?');
+  say $r1;
+
+  # Follow-up raid — has context from the first
+  my $r2 = await $raider->raid_f('List all pods and check for any issues.');
+  say $r2;
+}
+
+main()->get;
+```
+
+The Raider maintains conversation history across raids, so the LLM can reference earlier context (e.g. the RBAC permissions it discovered) in follow-up interactions.
+
 ## Dependencies
 
 - [MCP](https://metacpan.org/pod/MCP) — Model Context Protocol server implementation
@@ -112,7 +159,7 @@ This tells the LLM exactly what it can do without needing to call `k8s_permissio
 
 ## Author
 
-Torsten Raudssus <torsten@raudss.us>
+Torsten Raudssus <torsten@raudssus.de>
 
 ## License
 

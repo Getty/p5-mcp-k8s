@@ -979,6 +979,57 @@ Add to your project's C<.mcp.json> or global MCP settings:
     }
   }
 
+=head1 LANGERTHA RAIDER INTEGRATION
+
+Use L<Langertha::Raider> to build an autonomous AI agent that can
+interact with your Kubernetes cluster using MCP::K8s as its tool source:
+
+  use IO::Async::Loop;
+  use Future::AsyncAwait;
+  use Net::Async::MCP;
+  use Langertha::Engine::Anthropic;
+  use Langertha::Raider;
+  use MCP::K8s;
+
+  my $k8s = MCP::K8s->new(
+    namespaces => ['default', 'production'],
+  );
+
+  my $loop = IO::Async::Loop->new;
+  my $mcp = Net::Async::MCP->new(server => $k8s->server);
+  $loop->add($mcp);
+
+  async sub main {
+    await $mcp->initialize;
+
+    my $engine = Langertha::Engine::Anthropic->new(
+      api_key     => $ENV{ANTHROPIC_API_KEY},
+      model       => 'claude-sonnet-4-6',
+      mcp_servers => [$mcp],
+    );
+
+    my $raider = Langertha::Raider->new(
+      engine  => $engine,
+      mission => 'You are a Kubernetes operations assistant. '
+               . 'Always check permissions first, then help the user '
+               . 'investigate and manage their cluster.',
+    );
+
+    # First raid: discover capabilities
+    my $r1 = await $raider->raid_f('What can I do on this cluster?');
+    say $r1;
+
+    # Second raid: uses history from the first
+    my $r2 = await $raider->raid_f('List all pods and check for any issues.');
+    say $r2;
+  }
+
+  main()->get;
+
+The Raider maintains conversation history across raids, so the LLM
+can reference earlier context (e.g. the RBAC permissions it discovered)
+in follow-up interactions.
+
 =head1 SECURITY CONSIDERATIONS
 
 =over 4
@@ -1002,6 +1053,8 @@ C<secrets> from RBAC roles used for AI access.
 L<MCP::K8s::Permissions> — RBAC discovery engine
 
 L<MCP::Kubernetes> — Alias for this module
+
+L<Langertha::Raider> — Autonomous agent with conversation history and MCP tools
 
 L<Kubernetes::REST> — The underlying Kubernetes API client
 
