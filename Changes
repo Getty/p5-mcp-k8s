@@ -1,4 +1,4 @@
-{{$NEXT}}
+0.001     2026-02-24 02:12:29Z
 
   - Initial release
   - RBAC-aware MCP server for Kubernetes
