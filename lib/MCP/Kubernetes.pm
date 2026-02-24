@@ -5,8 +5,6 @@ use Moo;
 
 extends 'MCP::K8s';
 
-our $VERSION = '0.001';
-
 1;
 
 =head1 SYNOPSIS
@@ -34,7 +32,7 @@ Every attribute, method, and tool from L<MCP::K8s> works exactly the same:
   MCP::Kubernetes->new(...)      # same as MCP::K8s->new(...)
   MCP::Kubernetes->run_stdio     # same as MCP::K8s->run_stdio
   $obj->isa('MCP::K8s')         # true
-  $obj->server                   # MCP::Server with all 7 tools
+  $obj->server                   # MCP::Server with all 10 tools
 
 If you're looking for the Kubernetes MCP Server for AI assistants, see
 L<MCP::K8s> for the full documentation.

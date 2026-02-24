@@ -4,12 +4,11 @@ package MCP::K8s;
 use Moo;
 use MCP::Server;
 use MCP::K8s::Permissions;
+use Kubernetes::REST;
 use Kubernetes::REST::Kubeconfig;
 use JSON::MaybeXS;
 use Carp qw( croak );
 use namespace::clean;
-
-our $VERSION = '0.001';
 
 =head1 SYNOPSIS
 
@@ -24,6 +23,13 @@ our $VERSION = '0.001';
   $ export MCP_K8S_CONTEXT="my-cluster"
   $ export MCP_K8S_NAMESPACES="default,production"
   $ mcp-k8s
+
+  # Direct token authentication:
+  $ export MCP_K8S_TOKEN="eyJhbGci..."
+  $ export MCP_K8S_SERVER="https://my-cluster:6443"
+  $ mcp-k8s
+
+  # In-cluster: auto-detects when running as a Kubernetes pod
 
   # Programmatic usage with custom API:
   use MCP::K8s;
@@ -48,7 +54,7 @@ namespaces available, so the LLM always knows exactly what it can do.
 
 =over 4
 
-=item 1. B<Connect> — Reads kubeconfig (or uses provided API client) to connect to a Kubernetes cluster
+=item 1. B<Connect> — Authenticates via direct token, in-cluster service account, or kubeconfig
 
 =item 2. B<Discover> — Submits C<SelfSubjectRulesReview> requests to discover RBAC permissions per namespace
 
@@ -62,7 +68,7 @@ namespaces available, so the LLM always knows exactly what it can do.
 
 Kubernetes has 50+ built-in resource types plus unlimited Custom Resources.
 Instead of creating hundreds of specific tools (C<list_pods>, C<get_deployment>,
-C<delete_configmap>...), MCP::K8s uses 7 generic tools with a C<resource>
+C<delete_configmap>...), MCP::K8s uses 10 generic tools with a C<resource>
 parameter — the same pattern as C<kubectl get>, C<kubectl delete>, etc.
 This keeps the tool count manageable for MCP clients while supporting
 every resource type including CRDs.
@@ -118,6 +124,37 @@ by default. If not set, the kubeconfig's C<current-context> is used.
 
 =cut
 
+has token => (
+  is        => 'ro',
+  lazy      => 1,
+  default   => sub { $ENV{MCP_K8S_TOKEN} },
+  predicate => 1,
+);
+
+=attr token
+
+Optional. Bearer token for direct authentication. Read from
+C<$ENV{MCP_K8S_TOKEN}> by default. When set, bypasses kubeconfig
+entirely and connects using this token directly.
+
+=cut
+
+has server_endpoint => (
+  is        => 'ro',
+  lazy      => 1,
+  default   => sub { $ENV{MCP_K8S_SERVER} },
+  predicate => 1,
+);
+
+=attr server_endpoint
+
+Optional. Kubernetes API server URL. Read from C<$ENV{MCP_K8S_SERVER}>
+by default. Used with L</token> for direct authentication, or with
+in-cluster auth. Defaults to C<https://kubernetes.default.svc.cluster.local>
+when running in-cluster.
+
+=cut
+
 has namespaces => (
   is      => 'ro',
   lazy    => 1,
@@ -167,6 +204,11 @@ Built and populated automatically on first access via C<SelfSubjectRulesReview>.
 
 =cut
 
+has _resource_plurals_cache => (
+  is      => 'rw',
+  default => sub { {} },
+);
+
 has json => (
   is      => 'ro',
   lazy    => 1,
@@ -196,8 +238,53 @@ for the full list of registered tools.
 
 =cut
 
+my $IN_CLUSTER_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token';
+my $IN_CLUSTER_CA_PATH   = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt';
+my $IN_CLUSTER_NS_PATH   = '/var/run/secrets/kubernetes.io/serviceaccount/namespace';
+my $IN_CLUSTER_DEFAULT_SERVER = 'https://kubernetes.default.svc.cluster.local';
+
+sub _read_file {
+  my ($self, $path) = @_;
+  open my $fh, '<', $path or return undef;
+  my $content = do { local $/; <$fh> };
+  close $fh;
+  chomp $content if defined $content;
+  return $content;
+}
+
 sub _build_api {
   my ($self) = @_;
+
+  # Tier 1: Direct token from MCP_K8S_TOKEN
+  if ($self->has_token && defined $self->token && length $self->token) {
+    my $endpoint = ($self->has_server_endpoint && $self->server_endpoint)
+      ? $self->server_endpoint
+      : $IN_CLUSTER_DEFAULT_SERVER;
+    my %server = (endpoint => $endpoint);
+    $server{ssl_ca_file} = $IN_CLUSTER_CA_PATH if -f $IN_CLUSTER_CA_PATH;
+    return Kubernetes::REST->new(
+      server      => \%server,
+      credentials => { token => $self->token },
+    );
+  }
+
+  # Tier 2: In-cluster service account token
+  if (-f $IN_CLUSTER_TOKEN_PATH) {
+    my $sa_token = $self->_read_file($IN_CLUSTER_TOKEN_PATH);
+    if (defined $sa_token && length $sa_token) {
+      my $endpoint = ($self->has_server_endpoint && $self->server_endpoint)
+        ? $self->server_endpoint
+        : $IN_CLUSTER_DEFAULT_SERVER;
+      my %server = (endpoint => $endpoint);
+      $server{ssl_ca_file} = $IN_CLUSTER_CA_PATH if -f $IN_CLUSTER_CA_PATH;
+      return Kubernetes::REST->new(
+        server      => \%server,
+        credentials => { token => $sa_token },
+      );
+    }
+  }
+
+  # Tier 3: Kubeconfig (original behavior)
   my %kc_args;
   $kc_args{context_name} = $self->context_name if $self->has_context_name;
   my $kc = Kubernetes::REST::Kubeconfig->new(%kc_args);
@@ -210,6 +297,20 @@ sub _build_namespaces {
   # From environment variable
   if (my $env = $ENV{MCP_K8S_NAMESPACES}) {
     return [ split /,/, $env ];
+  }
+
+  # In-cluster: read mounted namespace as default
+  if (-f $IN_CLUSTER_NS_PATH) {
+    my $ns = $self->_read_file($IN_CLUSTER_NS_PATH);
+    if (defined $ns && length $ns) {
+      # Try to discover more, but use in-cluster namespace as fallback
+      my $list = eval { $self->api->list('Namespace') };
+      if (!$@ && $list) {
+        my @ns = map { $_->metadata->name } @{ $list->items // [] };
+        return \@ns if @ns;
+      }
+      return [$ns];
+    }
   }
 
   # Auto-discover from cluster
@@ -246,17 +347,101 @@ sub _resource_plural {
   my $plural = $self->_resource_plural('Ingress');   # => 'ingresses'
 
 Convert a Kubernetes Kind name (e.g. C<Pod>, C<Deployment>) to its plural
-form used in RBAC rules (e.g. C<pods>, C<deployments>). Uses a built-in
-map for common resources, with a fallback heuristic for unknown types.
+form used in RBAC rules (e.g. C<pods>, C<deployments>). Uses a 4-tier
+lookup:
+
+=over 4
+
+=item 1. Static C<%RESOURCE_PLURALS> map (fast, zero-cost)
+
+=item 2. C<IO::K8s> class C<resource_plural()> method (supports CRDs like Cilium)
+
+=item 3. API server discovery cache (lazy, one-time query)
+
+=item 4. Heuristic fallback (lowercase + simple pluralization)
+
+=back
 
 =cut
 
+  # Tier 1: Static map (fast path)
   return $RESOURCE_PLURALS{$resource} if $RESOURCE_PLURALS{$resource};
-  # Fallback: lowercase + simple pluralization
+
+  # Tier 2: IO::K8s class method (CRD classes like IO::K8s::...)
+  my $class = eval { $self->api->expand_class($resource) };
+  if ($class && $class->can('resource_plural')) {
+    my $plural = eval { $class->resource_plural };
+    return $plural if defined $plural && length $plural;
+  }
+
+  # Tier 3: API server discovery (cached)
+  my $cache = $self->_resource_plurals_cache;
+  unless (%$cache) {
+    $self->_discover_resource_plurals;
+    $cache = $self->_resource_plurals_cache;
+  }
+  return $cache->{$resource} if $cache->{$resource};
+
+  # Tier 4: Heuristic fallback
   my $plural = lc($resource);
   $plural .= 's' unless $plural =~ /s$/;
   $plural =~ s/ys$/ies/;
   return $plural;
+}
+
+sub _discover_resource_plurals {
+  my ($self) = @_;
+
+=method _discover_resource_plurals
+
+  $self->_discover_resource_plurals;
+
+Query the API server's discovery endpoints (C</api/v1> and C</apis>) to
+build a Kind-to-plural mapping. Results are cached in
+L</_resource_plurals_cache>. Failures are silently ignored — the cache
+simply remains empty and callers fall through to heuristic pluralization.
+
+=cut
+
+  my %cache;
+
+  # Query /api/v1 for core resources
+  my $core = eval {
+    my $resp = $self->api->_request('GET', '/api/v1');
+    return undef if !$resp || $resp->status >= 400;
+    JSON::MaybeXS->new->decode($resp->content);
+  };
+  if ($core && $core->{resources}) {
+    for my $r (@{ $core->{resources} }) {
+      next if ($r->{name} // '') =~ m{/};  # skip subresources
+      $cache{ $r->{kind} } = $r->{name} if $r->{kind} && $r->{name};
+    }
+  }
+
+  # Query /apis for API groups
+  my $groups = eval {
+    my $resp = $self->api->_request('GET', '/apis');
+    return undef if !$resp || $resp->status >= 400;
+    JSON::MaybeXS->new->decode($resp->content);
+  };
+  if ($groups && $groups->{groups}) {
+    for my $group (@{ $groups->{groups} }) {
+      my $pv = $group->{preferredVersion}{groupVersion} // next;
+      my $group_resources = eval {
+        my $resp = $self->api->_request('GET', "/apis/$pv");
+        return undef if !$resp || $resp->status >= 400;
+        JSON::MaybeXS->new->decode($resp->content);
+      };
+      if ($group_resources && $group_resources->{resources}) {
+        for my $r (@{ $group_resources->{resources} }) {
+          next if ($r->{name} // '') =~ m{/};
+          $cache{ $r->{kind} } = $r->{name} if $r->{kind} && $r->{name};
+        }
+      }
+    }
+  }
+
+  $self->_resource_plurals_cache(\%cache);
 }
 
 sub _resolve_namespace {
@@ -516,6 +701,63 @@ B<Parameters:>
 
 =back
 
+=head2 k8s_events
+
+Get Kubernetes events for debugging. Supports filtering by involved object
+name and arbitrary field selectors.
+
+B<Parameters:>
+
+=over 4
+
+=item C<namespace> (string) — Target namespace
+
+=item C<involved_object> (string) — Filter events by object name (e.g. pod name)
+
+=item C<field_selector> (string) — Field selector filter (e.g. C<reason=BackOff>)
+
+=back
+
+Returns JSON with C<count> and C<items> (array of event summaries).
+
+=head2 k8s_rollout_restart
+
+Trigger a rolling restart of a Deployment, StatefulSet, or DaemonSet.
+Works by patching the pod template annotation C<kubectl.kubernetes.io/restartedAt>
+with the current timestamp — the same mechanism as C<kubectl rollout restart>.
+
+B<Parameters:>
+
+=over 4
+
+=item C<resource> (string, B<required>) — One of C<Deployment>, C<StatefulSet>, C<DaemonSet>
+
+=item C<name> (string, B<required>) — Resource name
+
+=item C<namespace> (string) — Target namespace
+
+=back
+
+=head2 k8s_apply
+
+Create or update a Kubernetes resource (like C<kubectl apply>). Tries to
+create the resource first; if it already exists (409 Conflict), falls back
+to a strategic merge patch.
+
+B<Parameters:>
+
+=over 4
+
+=item C<resource> (string, B<required>) — Resource type (e.g. C<Deployment>, C<ConfigMap>)
+
+=item C<manifest> (object, B<required>) — Resource manifest. Must include C<metadata.name>.
+
+=item C<namespace> (string) — Target namespace
+
+=back
+
+Returns JSON confirmation with the action taken (C<created> or C<updated>).
+
 =cut
 
 sub _build_server {
@@ -523,7 +765,7 @@ sub _build_server {
 
   my $server = MCP::Server->new(
     name    => 'MCP-K8s',
-    version => $VERSION,
+    version => ($MCP::K8s::VERSION || 'dev'),
   );
 
   # ---- Tool 1: k8s_permissions ----
@@ -899,6 +1141,228 @@ sub _build_server {
     },
   );
 
+  # ---- Tool 8: k8s_events ----
+  my $events_desc = 'Get Kubernetes events for debugging. Available in: ' . $self->_available_resources_desc('list');
+  $server->tool(
+    name        => 'k8s_events',
+    description => $events_desc,
+    input_schema => {
+      type       => 'object',
+      properties => {
+        namespace => {
+          type        => 'string',
+          description => 'Namespace (auto-detected if only one available)',
+        },
+        involved_object => {
+          type        => 'string',
+          description => 'Filter events by involved object name (e.g. a pod name)',
+        },
+        field_selector => {
+          type        => 'string',
+          description => 'Field selector filter (e.g. reason=BackOff)',
+        },
+      },
+    },
+    code => sub {
+      my ($tool, $args) = @_;
+
+      my $ns = $self->_resolve_namespace($args);
+
+      unless ($self->permissions->can_do('list', 'events', $ns // '')) {
+        return "Permission denied: cannot list events" . ($ns ? " in namespace $ns" : "");
+      }
+
+      my %api_args;
+      $api_args{namespace} = $ns if defined $ns;
+
+      my @selectors;
+      if (my $obj = $args->{involved_object}) {
+        push @selectors, "involvedObject.name=$obj";
+      }
+      if (my $fs = $args->{field_selector}) {
+        push @selectors, $fs;
+      }
+      $api_args{fieldSelector} = join(',', @selectors) if @selectors;
+
+      my $list = eval { $self->api->list('Event', %api_args) };
+      return "Failed to list events: $@" if $@;
+
+      my $items = $list->items // [];
+      return "No events found" unless @$items;
+
+      my $summaries = $self->_format_list($items);
+      return $self->_to_json({
+        count => scalar @$items,
+        items => $summaries,
+      });
+    },
+  );
+
+  # ---- Tool 9: k8s_rollout_restart ----
+  my $restart_desc = 'Trigger rolling restart of a Deployment, StatefulSet, or DaemonSet. Available: ' . $self->_available_resources_desc('patch');
+  $server->tool(
+    name        => 'k8s_rollout_restart',
+    description => $restart_desc,
+    input_schema => {
+      type       => 'object',
+      properties => {
+        resource => {
+          type        => 'string',
+          description => 'Resource type: Deployment, StatefulSet, or DaemonSet',
+          enum        => ['Deployment', 'StatefulSet', 'DaemonSet'],
+        },
+        name => {
+          type        => 'string',
+          description => 'Resource name',
+        },
+        namespace => {
+          type        => 'string',
+          description => 'Namespace',
+        },
+      },
+      required => ['resource', 'name'],
+    },
+    code => sub {
+      my ($tool, $args) = @_;
+
+      my $resource = $args->{resource};
+      my $name     = $args->{name};
+      my $ns       = $self->_resolve_namespace($args);
+      my $plural   = $self->_resource_plural($resource);
+
+      unless ($self->permissions->can_do('patch', $plural, $ns // '')) {
+        return "Permission denied: cannot patch $resource" . ($ns ? " in namespace $ns" : "");
+      }
+
+      # Generate ISO 8601 timestamp without POSIX dependency
+      my @t = gmtime;
+      my $timestamp = sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
+        $t[5] + 1900, $t[4] + 1, $t[3], $t[2], $t[1], $t[0]);
+
+      my $patch = {
+        spec => {
+          template => {
+            metadata => {
+              annotations => {
+                'kubectl.kubernetes.io/restartedAt' => $timestamp,
+              },
+            },
+          },
+        },
+      };
+
+      my %api_args = (
+        patch => $patch,
+        type  => 'strategic',
+      );
+      $api_args{namespace} = $ns if defined $ns;
+
+      my $patched = eval { $self->api->patch($resource, $name, %api_args) };
+      return "Failed to restart $resource/$name: $@" if $@;
+
+      return $self->_to_json({
+        status    => 'restarting',
+        kind      => $resource,
+        name      => $name,
+        restartAt => $timestamp,
+        ($ns ? (namespace => $ns) : ()),
+      });
+    },
+  );
+
+  # ---- Tool 10: k8s_apply ----
+  my $apply_desc = 'Create or update a Kubernetes resource (like kubectl apply). Available: ' . $self->_available_resources_desc('create');
+  $server->tool(
+    name        => 'k8s_apply',
+    description => $apply_desc,
+    input_schema => {
+      type       => 'object',
+      properties => {
+        resource => {
+          type        => 'string',
+          description => 'Resource type (e.g. Deployment, ConfigMap)',
+        },
+        namespace => {
+          type        => 'string',
+          description => 'Namespace for the resource',
+        },
+        manifest => {
+          type        => 'object',
+          description => 'Resource manifest (must include metadata.name)',
+        },
+      },
+      required => ['resource', 'manifest'],
+    },
+    code => sub {
+      my ($tool, $args) = @_;
+
+      my $resource = $args->{resource};
+      my $ns       = $self->_resolve_namespace($args);
+      my $manifest = $args->{manifest};
+      my $plural   = $self->_resource_plural($resource);
+
+      my $can_create = $self->permissions->can_do('create', $plural, $ns // '');
+      my $can_patch  = $self->permissions->can_do('patch', $plural, $ns // '');
+
+      unless ($can_create || $can_patch) {
+        return "Permission denied: cannot create or patch $resource" . ($ns ? " in namespace $ns" : "");
+      }
+
+      my $res_name = eval { $manifest->{metadata}{name} };
+      return "manifest must include metadata.name" unless defined $res_name && length $res_name;
+
+      # Auto-populate namespace in metadata
+      if (defined $ns) {
+        $manifest->{metadata} //= {};
+        $manifest->{metadata}{namespace} //= $ns;
+      }
+
+      # Try create first
+      if ($can_create) {
+        my $obj = eval { $self->api->new_object($resource, $manifest) };
+        return "Failed to build $resource object: $@" if $@;
+
+        my $created = eval { $self->api->create($obj) };
+        if (!$@) {
+          my $created_name = eval { $created->metadata->name } // $res_name;
+          return $self->_to_json({
+            status => 'created',
+            kind   => $resource,
+            name   => $created_name,
+            ($ns ? (namespace => $ns) : ()),
+          });
+        }
+
+        # If 409 Conflict / AlreadyExists, fall through to patch
+        my $err = "$@";
+        unless ($err =~ /409|AlreadyExists/i) {
+          return "Failed to create $resource: $err";
+        }
+      }
+
+      # Fall back to strategic merge patch
+      unless ($can_patch) {
+        return "Resource already exists and cannot patch $resource" . ($ns ? " in namespace $ns" : "");
+      }
+
+      my %api_args = (
+        patch => $manifest,
+        type  => 'strategic',
+      );
+      $api_args{namespace} = $ns if defined $ns;
+
+      my $patched = eval { $self->api->patch($resource, $res_name, %api_args) };
+      return "Failed to update $resource/$res_name: $@" if $@;
+
+      return $self->_to_json({
+        status => 'updated',
+        kind   => $resource,
+        name   => $res_name,
+        ($ns ? (namespace => $ns) : ()),
+      });
+    },
+  );
+
   return $server;
 }
 
@@ -939,6 +1403,16 @@ Standard Kubernetes environment variable, also used by C<kubectl>.
 
 Kubeconfig context to use. Default: the kubeconfig's C<current-context>.
 
+=item C<MCP_K8S_TOKEN>
+
+Bearer token for direct authentication. Bypasses kubeconfig entirely.
+Useful for CI/CD pipelines or when you have a service account token.
+
+=item C<MCP_K8S_SERVER>
+
+Kubernetes API server URL. Used with C<MCP_K8S_TOKEN> or in-cluster auth.
+Default when in-cluster: C<https://kubernetes.default.svc.cluster.local>.
+
 =item C<MCP_K8S_NAMESPACES>
 
 Comma-separated list of namespaces to operate on.
@@ -946,6 +1420,43 @@ Default: auto-discovered from the cluster (lists all namespaces the
 service account can see). Falls back to C<default> if discovery fails.
 
 =back
+
+=head1 AUTHENTICATION
+
+MCP::K8s supports three authentication methods, tried in order:
+
+=over 4
+
+=item 1. B<Direct token> — Set C<MCP_K8S_TOKEN> (and optionally C<MCP_K8S_SERVER>)
+
+=item 2. B<In-cluster> — Auto-detected when running as a Kubernetes pod (reads mounted service account token from C</var/run/secrets/kubernetes.io/serviceaccount/token>)
+
+=item 3. B<Kubeconfig> — Reads C<~/.kube/config> (or C<$KUBECONFIG>), optionally filtered by C<MCP_K8S_CONTEXT>
+
+=back
+
+For in-cluster and direct token auth, the CA certificate at
+C</var/run/secrets/kubernetes.io/serviceaccount/ca.crt> is automatically
+used if present.
+
+=head1 RBAC SETUP
+
+Use a dedicated ServiceAccount with minimal permissions for AI access.
+Example RBAC manifests are included in the C<examples/> directory:
+
+=over 4
+
+=item C<examples/readonly-serviceaccount.yaml> — Read-only access (recommended starting point)
+
+=item C<examples/deployer-serviceaccount.yaml> — Read + deploy/restart capabilities
+
+=item C<examples/full-ops-serviceaccount.yaml> — Full access except secrets
+
+=back
+
+RBAC is the single source of truth — if the service account shouldn't have
+access, don't grant it via RBAC. MCP::K8s does B<not> implement
+application-layer permission filtering.
 
 =head1 CLAUDE DESKTOP INTEGRATION
 
@@ -1029,6 +1540,10 @@ interact with your Kubernetes cluster using MCP::K8s as its tool source:
 The Raider maintains conversation history across raids, so the LLM
 can reference earlier context (e.g. the RBAC permissions it discovered)
 in follow-up interactions.
+
+A ready-to-run demo is included in C<examples/raider-configmap-demo.pl> — an AI
+creates, reads, updates, and deletes a ConfigMap. See the script's POD
+for requirements.
 
 =head1 SECURITY CONSIDERATIONS
 

@@ -1,15 +1,37 @@
 {{$NEXT}}
 
   - Initial release
-  - RBAC-aware dynamic tool discovery via SelfSubjectRulesReview
-  - 7 MCP tools: k8s_permissions, k8s_list, k8s_get, k8s_create,
-    k8s_patch, k8s_delete, k8s_logs
-  - Kubeconfig-based authentication with context selection
-  - Dynamic tool descriptions reflecting actual RBAC permissions
-  - Wildcard handling for verbs and resources
-  - Auto-namespace detection (single namespace auto-fill)
-  - Pod log support via raw API endpoint
+  - RBAC-aware MCP server for Kubernetes
+    - Dynamic tool discovery via SelfSubjectRulesReview
+    - Dynamic tool descriptions reflecting actual permissions
+    - Wildcard handling for verbs and resources
+    - Permission check before every tool call
+  - 10 MCP tools:
+    - k8s_permissions — show RBAC permissions
+    - k8s_list — list resources with label/field selectors
+    - k8s_get — get resource in summary, JSON, or YAML format
+    - k8s_create — create a resource from manifest
+    - k8s_patch — strategic merge, JSON merge, or JSON patch
+    - k8s_delete — delete a resource
+    - k8s_logs — pod container logs via raw API endpoint
+    - k8s_events — dedicated event listing with object/field filters
+    - k8s_rollout_restart — rolling restart for Deployments,
+      StatefulSets, DaemonSets (same as kubectl rollout restart)
+    - k8s_apply — create-or-update semantics (like kubectl apply),
+      tries create first, falls back to strategic merge patch on 409
+  - Three authentication methods (tried in order):
+    - Direct token via MCP_K8S_TOKEN + MCP_K8S_SERVER
+    - In-cluster service account auto-detection
+    - Kubeconfig fallback with MCP_K8S_CONTEXT support
+  - Dynamic resource plural discovery via API server endpoints
+    - 4-tier lookup: static map, IO::K8s class, API discovery, heuristic
+    - Supports CRDs (e.g. Cilium) without configuration
+  - Auto-namespace detection (single namespace auto-fill,
+    in-cluster namespace from mounted service account)
+  - Example RBAC manifests in examples/:
+    - readonly-serviceaccount.yaml
+    - deployer-serviceaccount.yaml
+    - full-ops-serviceaccount.yaml
+  - Live demo script examples/raider-configmap-demo.pl
+    (Langertha::Raider + MCP::K8s)
   - MCP::Kubernetes alias module for CPAN discoverability
-  - Support for label and field selectors on list operations
-  - Multiple output formats for get: summary, JSON, YAML
-  - Three patch strategies: strategic merge, JSON merge, JSON patch

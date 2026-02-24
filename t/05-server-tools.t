@@ -29,6 +29,9 @@ use JSON::MaybeXS;
 
   sub create {
     my ($self, $obj) = @_;
+    if ($self->{force_409} && $obj->can('kind') && $obj->kind ne 'SelfSubjectRulesReview') {
+      die "409 Conflict: AlreadyExists\n";
+    }
     return $obj;
   }
 
@@ -100,7 +103,8 @@ use JSON::MaybeXS;
     if ($namespace eq 'test-ns') {
       @rules = (
         MockSSRRRule->new(['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'],
-                          ['pods', 'services', 'deployments', 'configmaps']),
+                          ['pods', 'services', 'deployments', 'configmaps', 'events',
+                           'statefulsets', 'daemonsets']),
         MockSSRRRule->new(['get'], ['pods/log']),
       );
     } elsif ($namespace eq 'other-ns') {
@@ -243,14 +247,15 @@ subtest 'server is an MCP::Server' => sub {
 subtest 'server has correct name and version' => sub {
   my $server = $k8s->server;
   is($server->name, 'MCP-K8s', 'server name');
-  is($server->version, $MCP::K8s::VERSION, 'server version matches module');
+  is($server->version, ($MCP::K8s::VERSION || 'dev'), 'server version matches module');
 };
 
-subtest 'all 7 tools registered' => sub {
+subtest 'all 10 tools registered' => sub {
   my $server = $k8s->server;
   my @expected_tools = qw(
     k8s_permissions k8s_list k8s_get k8s_create
     k8s_patch k8s_delete k8s_logs
+    k8s_events k8s_rollout_restart k8s_apply
   );
 
   for my $tool_name (@expected_tools) {
@@ -258,7 +263,7 @@ subtest 'all 7 tools registered' => sub {
     ok($tool, "tool '$tool_name' registered");
   }
 
-  is(scalar @{ $server->tools }, 7, 'exactly 7 tools total');
+  is(scalar @{ $server->tools }, 10, 'exactly 10 tools total');
 };
 
 subtest 'k8s_permissions tool returns summary' => sub {
@@ -431,6 +436,128 @@ subtest 'namespace auto-fill works in tools' => sub {
   });
   my $data = JSON::MaybeXS->new->decode($result);
   is($data->{count}, 2, 'list works with auto-filled namespace');
+};
+
+# =================================================================
+# Additional tool tests
+# =================================================================
+
+subtest 'k8s_events tool works' => sub {
+  my $tool = find_tool($k8s->server, 'k8s_events');
+  ok($tool, 'k8s_events tool exists');
+
+  my $result = $tool->code->($tool, {
+    namespace => 'test-ns',
+  });
+  my $data = JSON::MaybeXS->new->decode($result);
+  is($data->{count}, 2, 'events returns items');
+};
+
+subtest 'k8s_events with involved_object filter' => sub {
+  my $tool = find_tool($k8s->server, 'k8s_events');
+  my $result = $tool->code->($tool, {
+    namespace       => 'test-ns',
+    involved_object => 'my-pod',
+  });
+  my $data = JSON::MaybeXS->new->decode($result);
+  ok($data->{count}, 'events with involved_object filter returns results');
+};
+
+subtest 'k8s_events permission denied' => sub {
+  my $tool = find_tool($k8s->server, 'k8s_events');
+  my $result = $tool->code->($tool, {
+    namespace => 'wrong-ns',
+  });
+  like($result, qr/Permission denied/, 'events denied for wrong namespace');
+};
+
+subtest 'k8s_rollout_restart tool works' => sub {
+  my $tool = find_tool($k8s->server, 'k8s_rollout_restart');
+  ok($tool, 'k8s_rollout_restart tool exists');
+
+  my $result = $tool->code->($tool, {
+    resource  => 'Deployment',
+    name      => 'my-deploy',
+    namespace => 'test-ns',
+  });
+  my $data = JSON::MaybeXS->new->decode($result);
+  is($data->{status}, 'restarting', 'rollout_restart returns restarting status');
+  is($data->{kind}, 'Deployment', 'rollout_restart returns correct kind');
+  is($data->{name}, 'my-deploy', 'rollout_restart returns correct name');
+  like($data->{restartAt}, qr/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+    'restartAt is ISO 8601 timestamp');
+};
+
+subtest 'k8s_rollout_restart permission denied' => sub {
+  my $tool = find_tool($k8s->server, 'k8s_rollout_restart');
+  my $result = $tool->code->($tool, {
+    resource  => 'Deployment',
+    name      => 'my-deploy',
+    namespace => 'wrong-ns',
+  });
+  like($result, qr/Permission denied/, 'rollout_restart denied for wrong namespace');
+};
+
+subtest 'k8s_apply creates new resource' => sub {
+  my $tool = find_tool($k8s->server, 'k8s_apply');
+  ok($tool, 'k8s_apply tool exists');
+
+  my $result = $tool->code->($tool, {
+    resource  => 'ConfigMap',
+    namespace => 'test-ns',
+    manifest  => {
+      metadata => { name => 'my-config' },
+      data     => { key => 'value' },
+    },
+  });
+  my $data = JSON::MaybeXS->new->decode($result);
+  is($data->{status}, 'created', 'apply creates new resource');
+  is($data->{kind}, 'ConfigMap', 'apply returns correct kind');
+};
+
+subtest 'k8s_apply falls back to patch on 409' => sub {
+  # Enable 409 simulation
+  $api->{force_409} = 1;
+
+  my $tool = find_tool($k8s->server, 'k8s_apply');
+  my $result = $tool->code->($tool, {
+    resource  => 'ConfigMap',
+    namespace => 'test-ns',
+    manifest  => {
+      metadata => { name => 'existing-config' },
+      data     => { key => 'updated-value' },
+    },
+  });
+  my $data = JSON::MaybeXS->new->decode($result);
+  is($data->{status}, 'updated', 'apply falls back to patch on 409');
+  is($data->{name}, 'existing-config', 'apply returns correct name after update');
+
+  # Disable 409 simulation
+  $api->{force_409} = 0;
+};
+
+subtest 'k8s_apply requires metadata.name' => sub {
+  my $tool = find_tool($k8s->server, 'k8s_apply');
+  my $result = $tool->code->($tool, {
+    resource  => 'ConfigMap',
+    namespace => 'test-ns',
+    manifest  => {
+      data => { key => 'value' },
+    },
+  });
+  like($result, qr/metadata\.name/, 'apply requires metadata.name');
+};
+
+subtest 'k8s_apply permission denied' => sub {
+  my $tool = find_tool($k8s->server, 'k8s_apply');
+  my $result = $tool->code->($tool, {
+    resource  => 'ConfigMap',
+    namespace => 'wrong-ns',
+    manifest  => {
+      metadata => { name => 'test' },
+    },
+  });
+  like($result, qr/Permission denied/, 'apply denied for wrong namespace');
 };
 
 done_testing;

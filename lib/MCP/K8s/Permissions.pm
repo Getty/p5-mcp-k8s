@@ -6,8 +6,6 @@ use Carp qw( croak );
 use Scalar::Util qw( weaken );
 use namespace::clean;
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
   use MCP::K8s::Permissions;

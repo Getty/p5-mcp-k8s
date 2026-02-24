@@ -17,6 +17,9 @@ cpanm MCP::K8s
 
 # Run (uses current kubeconfig context)
 mcp-k8s
+
+# Or with direct token authentication
+MCP_K8S_TOKEN=$(kubectl create token my-sa) MCP_K8S_SERVER=https://my-cluster:6443 mcp-k8s
 ```
 
 ## Claude Desktop
@@ -56,7 +59,7 @@ Add to your project's `.mcp.json`:
 
 ## How It Works
 
-1. **Connect** — Reads your kubeconfig to connect to a Kubernetes cluster
+1. **Connect** — Authenticates via direct token, in-cluster service account, or kubeconfig
 2. **Discover** — Submits `SelfSubjectRulesReview` requests to discover RBAC permissions per namespace
 3. **Register** — Creates MCP tools with dynamic descriptions reflecting actual permissions
 4. **Serve** — Runs the MCP protocol over stdio, checking permissions on every tool call
@@ -72,10 +75,13 @@ Add to your project's `.mcp.json`:
 | `k8s_patch` | Partially update a resource (strategic/merge/JSON patch) |
 | `k8s_delete` | Delete a resource |
 | `k8s_logs` | Get pod container logs |
+| `k8s_events` | Get events for debugging (filter by object, field selector) |
+| `k8s_rollout_restart` | Trigger rolling restart of Deployment/StatefulSet/DaemonSet |
+| `k8s_apply` | Create or update a resource (like `kubectl apply`) |
 
-### Why 7 generic tools instead of hundreds?
+### Why 10 generic tools instead of hundreds?
 
-Kubernetes has 50+ built-in resource types plus unlimited CRDs. Instead of creating specific tools (`list_pods`, `get_deployment`, `delete_configmap`...), MCP::K8s uses generic tools with a `resource` parameter — the same pattern as `kubectl get <resource>`, `kubectl delete <resource>`. This keeps the tool count manageable for MCP clients while supporting every resource type.
+Kubernetes has 50+ built-in resource types plus unlimited CRDs. Instead of creating specific tools (`list_pods`, `get_deployment`, `delete_configmap`...), MCP::K8s uses generic tools with a `resource` parameter — the same pattern as `kubectl get <resource>`, `kubectl delete <resource>`. This keeps the tool count manageable for MCP clients while supporting every resource type including CRDs.
 
 ### Dynamic Tool Descriptions
 
@@ -85,17 +91,63 @@ Tool descriptions include the specific resources and namespaces available based 
 
 This tells the LLM exactly what it can do without needing to call `k8s_permissions` first (though it should, for the full picture).
 
+### CRD Support
+
+MCP::K8s supports Custom Resource Definitions (CRDs) out of the box. Resource plurals are resolved dynamically via API server discovery, so CRDs like Cilium's `CiliumNetworkPolicy` work without any configuration.
+
+## Authentication
+
+MCP::K8s supports three authentication methods, tried in order:
+
+| Method | Configuration | Use Case |
+|--------|--------------|----------|
+| **Direct token** | `MCP_K8S_TOKEN` + `MCP_K8S_SERVER` | CI/CD, scripts, explicit token |
+| **In-cluster** | Auto-detected from SA mount | Running as a Kubernetes pod |
+| **Kubeconfig** | `KUBECONFIG` + `MCP_K8S_CONTEXT` | Local development (default) |
+
+In-cluster auth reads the service account token from `/var/run/secrets/kubernetes.io/serviceaccount/token` and uses the in-cluster CA certificate automatically.
+
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `KUBECONFIG` | Path to kubeconfig file | `~/.kube/config` |
 | `MCP_K8S_CONTEXT` | Kubeconfig context to use | current-context |
+| `MCP_K8S_TOKEN` | Bearer token (bypasses kubeconfig) | — |
+| `MCP_K8S_SERVER` | API server URL | in-cluster default |
 | `MCP_K8S_NAMESPACES` | Comma-separated namespaces | auto-discover |
+
+## RBAC Setup
+
+Use a dedicated ServiceAccount with minimal permissions. Example manifests are included in [`examples/`](examples/):
+
+- **[`readonly-serviceaccount.yaml`](examples/readonly-serviceaccount.yaml)** — Read-only access (recommended starting point)
+- **[`deployer-serviceaccount.yaml`](examples/deployer-serviceaccount.yaml)** — Read + deploy/restart capabilities
+- **[`full-ops-serviceaccount.yaml`](examples/full-ops-serviceaccount.yaml)** — Full access except secrets
+
+```bash
+# Apply the readonly example
+kubectl apply -f examples/readonly-serviceaccount.yaml
+
+# Get a token
+MCP_K8S_TOKEN=$(kubectl create token mcp-k8s-readonly -n mcp-k8s)
+MCP_K8S_SERVER=https://$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
+mcp-k8s
+```
+
+RBAC is the single source of truth — if the service account shouldn't have access, don't grant it. MCP::K8s does **not** implement application-layer permission filtering.
+
+## In-Cluster Deployment
+
+When running MCP::K8s as a pod inside the cluster, authentication is automatic:
+
+1. Mount a ServiceAccount (e.g. from the examples above)
+2. Set `MCP_K8S_NAMESPACES` if needed (otherwise auto-discovers from the mounted SA namespace)
+3. The in-cluster token and CA cert are read automatically
 
 ## Security
 
-- The server inherits permissions from the kubeconfig context. Use a dedicated service account with minimal RBAC for AI access.
+- The server inherits permissions from its authentication method. Use a dedicated service account with minimal RBAC for AI access.
 - All tool calls verify RBAC permissions **before** executing API calls.
 - If the service account can read Secrets, the LLM can too. Consider excluding `secrets` from AI service account roles.
 
@@ -145,6 +197,16 @@ main()->get;
 ```
 
 The Raider maintains conversation history across raids, so the LLM can reference earlier context (e.g. the RBAC permissions it discovered) in follow-up interactions.
+
+### Live Demo
+
+A ready-to-run demo script is included in `examples/raider-configmap-demo.pl`. It has an AI create, read, update, and delete a ConfigMap — completely harmless:
+
+```bash
+LANGERTHA_ANTHROPIC_API_KEY=sk-ant-... perl -Ilib examples/raider-configmap-demo.pl
+```
+
+The AI decides which MCP tools to call, reports each step, and cleans up after itself. See the script's POD for details and requirements.
 
 ## Dependencies
 

@@ -3,14 +3,30 @@ use warnings;
 use Test::More;
 
 # Test the resource plural mapping without connecting to a cluster.
-# We access _resource_plural via a minimal MCP::K8s instance.
 
-# We can't instantiate MCP::K8s without a cluster, but we can
-# test the class method by reaching into the package.
 use MCP::K8s;
 
-# Create a bare object without triggering lazy builders
-my $k8s = bless {}, 'MCP::K8s';
+# Minimal mock API to avoid cluster connection
+{
+  package MockPluralAPI;
+  sub new { bless {}, shift }
+  sub expand_class { undef }
+  sub _request {
+    return MockPluralResp->new(404, '{}');
+  }
+}
+
+{
+  package MockPluralResp;
+  sub new { bless { status => $_[1], content => $_[2] }, $_[0] }
+  sub status  { $_[0]->{status} }
+  sub content { $_[0]->{content} }
+}
+
+my $k8s = MCP::K8s->new(
+  api        => MockPluralAPI->new,
+  namespaces => ['default'],
+);
 
 subtest 'common resource plurals' => sub {
   my %expected = (
@@ -64,6 +80,15 @@ subtest 'known plurals are stable' => sub {
   # Verify we get the same result on repeated calls
   is($k8s->_resource_plural('Pod'), 'pods', 'Pod consistent (1)');
   is($k8s->_resource_plural('Pod'), 'pods', 'Pod consistent (2)');
+};
+
+subtest 'IO::K8s class resource_plural method' => sub {
+  # Static map always wins regardless of expand_class
+  is($k8s->_resource_plural('Pod'), 'pods',
+    'static map wins even if IO::K8s class exists');
+
+  # Full integration test for IO::K8s class resolution is in
+  # t/08-resource-discovery.t
 };
 
 done_testing;

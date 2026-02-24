@@ -21,6 +21,9 @@ __END__
   # Restrict to specific namespaces:
   $ MCP_K8S_NAMESPACES=default,staging mcp-k8s
 
+  # Direct token authentication:
+  $ MCP_K8S_TOKEN="eyJhbGci..." MCP_K8S_SERVER=https://my-cluster:6443 mcp-k8s
+
   # Full example:
   $ KUBECONFIG=/path/to/config MCP_K8S_CONTEXT=prod MCP_K8S_NAMESPACES=app mcp-k8s
 
@@ -52,6 +55,15 @@ Path to kubeconfig file. Defaults to C<~/.kube/config>.
 
 Which kubeconfig context to use. Defaults to the kubeconfig's
 C<current-context>.
+
+=item C<MCP_K8S_TOKEN>
+
+Bearer token for direct authentication. Bypasses kubeconfig entirely.
+
+=item C<MCP_K8S_SERVER>
+
+Kubernetes API server URL. Used with C<MCP_K8S_TOKEN> or in-cluster auth.
+Defaults to C<https://kubernetes.default.svc.cluster.local> when in-cluster.
 
 =item C<MCP_K8S_NAMESPACES>
 
@@ -93,7 +105,7 @@ Add to your project's C<.mcp.json>:
 
 =head1 TOOLS PROVIDED
 
-The server registers 7 MCP tools, each gated by RBAC permissions:
+The server registers 10 MCP tools, each gated by RBAC permissions:
 
 =over 4
 
@@ -110,6 +122,12 @@ The server registers 7 MCP tools, each gated by RBAC permissions:
 =item B<k8s_delete> — Delete a resource
 
 =item B<k8s_logs> — Get pod container logs
+
+=item B<k8s_events> — Get events for debugging
+
+=item B<k8s_rollout_restart> — Trigger rolling restart of Deployment/StatefulSet/DaemonSet
+
+=item B<k8s_apply> — Create or update a resource (like C<kubectl apply>)
 
 =back
 
