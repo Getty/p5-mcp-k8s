@@ -1,6 +1,6 @@
 package MCP::K8s::Permissions;
 # ABSTRACT: RBAC discovery and permission checking for Kubernetes
-
+our $VERSION = '0.002';
 use Moo;
 use Carp qw( croak );
 use Scalar::Util qw( weaken );

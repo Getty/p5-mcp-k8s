@@ -1,6 +1,6 @@
 package MCP::K8s;
 # ABSTRACT: MCP Server for Kubernetes with RBAC-aware dynamic tools
-
+our $VERSION = '0.002';
 use Moo;
 use MCP::Server;
 use MCP::K8s::Permissions;
