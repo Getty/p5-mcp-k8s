@@ -1,6 +1,6 @@
 package MCP::Kubernetes;
 # ABSTRACT: MCP Server for Kubernetes (alias for MCP::K8s)
-our $VERSION = '0.002';
+our $VERSION = '0.003';
 use Moo;
 
 extends 'MCP::K8s';
