@@ -1,5 +1,8 @@
 {{$NEXT}}
 
+  - MCP::K8s now inherits from MCP::Server instead of composing it
+  - Backward compatible: ->server returns $self
+
 0.001     2026-02-24 02:12:29Z
 
   - Initial release

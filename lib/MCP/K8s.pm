@@ -3,6 +3,7 @@ package MCP::K8s;
 our $VERSION = '0.002';
 use Moo;
 use MCP::Server;
+extends 'MCP::Server';
 use MCP::K8s::Permissions;
 use Kubernetes::REST;
 use Kubernetes::REST::Kubeconfig;
@@ -37,7 +38,7 @@ use namespace::clean;
     api        => $my_kubernetes_rest_instance,
     namespaces => ['default', 'staging'],
   );
-  $k8s->server->to_stdio;
+  $k8s->to_stdio;
 
 =head1 DESCRIPTION
 
@@ -224,19 +225,21 @@ C<canonical>, and C<convert_blessed> for consistent, readable output.
 
 =cut
 
-has server => (
-  is      => 'ro',
-  lazy    => 1,
-  builder => '_build_server',
-);
+=method server
 
-=attr server
-
-L<MCP::Server> instance with all MCP tools registered. Built lazily,
-which triggers RBAC discovery and tool registration. See L</MCP TOOLS>
-for the full list of registered tools.
+Returns C<$self> for backward compatibility. Since MCP::K8s now inherits
+from L<MCP::Server>, the object itself is the server.
 
 =cut
+
+sub server { $_[0] }
+
+sub BUILD {
+  my ($self) = @_;
+  $self->name('MCP-K8s') if $self->name eq 'PerlServer';
+  $self->version($MCP::K8s::VERSION || 'dev') if $self->version eq '1.0.0';
+  $self->_register_tools;
+}
 
 my $IN_CLUSTER_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token';
 my $IN_CLUSTER_CA_PATH   = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt';
@@ -760,16 +763,11 @@ Returns JSON confirmation with the action taken (C<created> or C<updated>).
 
 =cut
 
-sub _build_server {
+sub _register_tools {
   my ($self) = @_;
 
-  my $server = MCP::Server->new(
-    name    => 'MCP-K8s',
-    version => ($MCP::K8s::VERSION || 'dev'),
-  );
-
   # ---- Tool 1: k8s_permissions ----
-  $server->tool(
+  $self->tool(
     name        => 'k8s_permissions',
     description => 'Show what this Kubernetes service account is allowed to do (RBAC permissions). Call this first to understand available capabilities.',
     input_schema => {
@@ -784,7 +782,7 @@ sub _build_server {
 
   # ---- Tool 2: k8s_list ----
   my $list_desc = 'List Kubernetes resources. Available: ' . $self->_available_resources_desc('list');
-  $server->tool(
+  $self->tool(
     name        => 'k8s_list',
     description => $list_desc,
     input_schema => {
@@ -841,7 +839,7 @@ sub _build_server {
 
   # ---- Tool 3: k8s_get ----
   my $get_desc = 'Get a single Kubernetes resource. Available: ' . $self->_available_resources_desc('get');
-  $server->tool(
+  $self->tool(
     name        => 'k8s_get',
     description => $get_desc,
     input_schema => {
@@ -902,7 +900,7 @@ sub _build_server {
 
   # ---- Tool 4: k8s_create ----
   my $create_desc = 'Create a Kubernetes resource. Available: ' . $self->_available_resources_desc('create');
-  $server->tool(
+  $self->tool(
     name        => 'k8s_create',
     description => $create_desc,
     input_schema => {
@@ -959,7 +957,7 @@ sub _build_server {
 
   # ---- Tool 5: k8s_patch ----
   my $patch_desc = 'Patch (partial update) a Kubernetes resource. Available: ' . $self->_available_resources_desc('patch');
-  $server->tool(
+  $self->tool(
     name        => 'k8s_patch',
     description => $patch_desc,
     input_schema => {
@@ -1023,7 +1021,7 @@ sub _build_server {
 
   # ---- Tool 6: k8s_delete ----
   my $delete_desc = 'Delete a Kubernetes resource. Available: ' . $self->_available_resources_desc('delete');
-  $server->tool(
+  $self->tool(
     name        => 'k8s_delete',
     description => $delete_desc,
     input_schema => {
@@ -1076,7 +1074,7 @@ sub _build_server {
     $self->permissions->can_read_logs($_)
   } $self->permissions->allowed_namespaces;
   my $logs_desc = 'Get pod logs. Available in namespaces: ' . (join(', ', @log_ns) || 'none');
-  $server->tool(
+  $self->tool(
     name        => 'k8s_logs',
     description => $logs_desc,
     input_schema => {
@@ -1143,7 +1141,7 @@ sub _build_server {
 
   # ---- Tool 8: k8s_events ----
   my $events_desc = 'Get Kubernetes events for debugging. Available in: ' . $self->_available_resources_desc('list');
-  $server->tool(
+  $self->tool(
     name        => 'k8s_events',
     description => $events_desc,
     input_schema => {
@@ -1200,7 +1198,7 @@ sub _build_server {
 
   # ---- Tool 9: k8s_rollout_restart ----
   my $restart_desc = 'Trigger rolling restart of a Deployment, StatefulSet, or DaemonSet. Available: ' . $self->_available_resources_desc('patch');
-  $server->tool(
+  $self->tool(
     name        => 'k8s_rollout_restart',
     description => $restart_desc,
     input_schema => {
@@ -1272,7 +1270,7 @@ sub _build_server {
 
   # ---- Tool 10: k8s_apply ----
   my $apply_desc = 'Create or update a Kubernetes resource (like kubectl apply). Available: ' . $self->_available_resources_desc('create');
-  $server->tool(
+  $self->tool(
     name        => 'k8s_apply',
     description => $apply_desc,
     input_schema => {
@@ -1363,7 +1361,6 @@ sub _build_server {
     },
   );
 
-  return $server;
 }
 
 sub run_stdio {
@@ -1385,7 +1382,7 @@ script.
 =cut
 
   $self = $self->new unless ref $self;
-  $self->server->to_stdio;
+  $self->to_stdio;
 }
 
 1;
