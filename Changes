@@ -1,4 +1,4 @@
-{{$NEXT}}
+0.002     2026-03-05 21:29:05Z
 
   - MCP::K8s now inherits from MCP::Server instead of composing it
   - Backward compatible: ->server returns $self
