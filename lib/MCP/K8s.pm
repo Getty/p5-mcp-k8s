@@ -210,6 +210,17 @@ has _resource_plurals_cache => (
   default => sub { {} },
 );
 
+# Stores [tool_ref, base_desc, verb] tuples for lazy description updates
+has _tool_desc_map => (
+  is      => 'rw',
+  default => sub { [] },
+);
+
+has _descriptions_updated => (
+  is      => 'rw',
+  default => 0,
+);
+
 has json => (
   is      => 'ro',
   lazy    => 1,
@@ -328,12 +339,10 @@ sub _build_namespaces {
 
 sub _build_permissions {
   my ($self) = @_;
-  my $perms = MCP::K8s::Permissions->new(
+  return MCP::K8s::Permissions->new(
     api        => $self->api,
     namespaces => $self->namespaces,
   );
-  $perms->discover;
-  return $perms;
 }
 
 sub _to_json {
@@ -573,6 +582,25 @@ sub _available_resources_desc {
   return join('; ', @parts) || 'none discovered';
 }
 
+sub _update_tool_descriptions {
+  my ($self) = @_;
+  return if $self->_descriptions_updated;
+  $self->permissions->ensure_discovered;
+
+  for my $entry (@{ $self->_tool_desc_map }) {
+    my ($tool, $base, $verb) = @$entry;
+    if ($verb eq '_logs') {
+      my @log_ns = grep {
+        $self->permissions->can_read_logs($_)
+      } $self->permissions->allowed_namespaces;
+      $tool->description($base . (join(', ', @log_ns) || 'none'));
+    } else {
+      $tool->description($base . $self->_available_resources_desc($verb));
+    }
+  }
+  $self->_descriptions_updated(1);
+}
+
 =head1 MCP TOOLS
 
 All tools are registered on the L</server> during construction. Each tool
@@ -766,6 +794,8 @@ Returns JSON confirmation with the action taken (C<created> or C<updated>).
 sub _register_tools {
   my ($self) = @_;
 
+  my @desc_map;
+
   # ---- Tool 1: k8s_permissions ----
   $self->tool(
     name        => 'k8s_permissions',
@@ -781,8 +811,8 @@ sub _register_tools {
   );
 
   # ---- Tool 2: k8s_list ----
-  my $list_desc = 'List Kubernetes resources. Available: ' . $self->_available_resources_desc('list');
-  $self->tool(
+  my $list_desc = 'List Kubernetes resources.';
+  push @desc_map, [$self->tool(
     name        => 'k8s_list',
     description => $list_desc,
     input_schema => {
@@ -835,11 +865,11 @@ sub _register_tools {
         items => $summaries,
       });
     },
-  );
+  ), 'List Kubernetes resources. Available: ', 'list'];
 
   # ---- Tool 3: k8s_get ----
-  my $get_desc = 'Get a single Kubernetes resource. Available: ' . $self->_available_resources_desc('get');
-  $self->tool(
+  my $get_desc = 'Get a single Kubernetes resource.';
+  push @desc_map, [$self->tool(
     name        => 'k8s_get',
     description => $get_desc,
     input_schema => {
@@ -896,11 +926,11 @@ sub _register_tools {
         return $self->_to_json($self->_format_resource_summary($obj));
       }
     },
-  );
+  ), 'Get a single Kubernetes resource. Available: ', 'get'];
 
   # ---- Tool 4: k8s_create ----
-  my $create_desc = 'Create a Kubernetes resource. Available: ' . $self->_available_resources_desc('create');
-  $self->tool(
+  my $create_desc = 'Create a Kubernetes resource.';
+  push @desc_map, [$self->tool(
     name        => 'k8s_create',
     description => $create_desc,
     input_schema => {
@@ -953,11 +983,11 @@ sub _register_tools {
         ($ns ? (namespace => $ns) : ()),
       });
     },
-  );
+  ), 'Create a Kubernetes resource. Available: ', 'create'];
 
   # ---- Tool 5: k8s_patch ----
-  my $patch_desc = 'Patch (partial update) a Kubernetes resource. Available: ' . $self->_available_resources_desc('patch');
-  $self->tool(
+  my $patch_desc = 'Patch (partial update) a Kubernetes resource.';
+  push @desc_map, [$self->tool(
     name        => 'k8s_patch',
     description => $patch_desc,
     input_schema => {
@@ -1017,11 +1047,11 @@ sub _register_tools {
         ($ns ? (namespace => $ns) : ()),
       });
     },
-  );
+  ), 'Patch (partial update) a Kubernetes resource. Available: ', 'patch'];
 
   # ---- Tool 6: k8s_delete ----
-  my $delete_desc = 'Delete a Kubernetes resource. Available: ' . $self->_available_resources_desc('delete');
-  $self->tool(
+  my $delete_desc = 'Delete a Kubernetes resource.';
+  push @desc_map, [$self->tool(
     name        => 'k8s_delete',
     description => $delete_desc,
     input_schema => {
@@ -1067,14 +1097,11 @@ sub _register_tools {
         ($ns ? (namespace => $ns) : ()),
       });
     },
-  );
+  ), 'Delete a Kubernetes resource. Available: ', 'delete'];
 
   # ---- Tool 7: k8s_logs ----
-  my @log_ns = grep {
-    $self->permissions->can_read_logs($_)
-  } $self->permissions->allowed_namespaces;
-  my $logs_desc = 'Get pod logs. Available in namespaces: ' . (join(', ', @log_ns) || 'none');
-  $self->tool(
+  my $logs_desc = 'Get pod logs from Kubernetes pods.';
+  push @desc_map, [$self->tool(
     name        => 'k8s_logs',
     description => $logs_desc,
     input_schema => {
@@ -1137,11 +1164,11 @@ sub _register_tools {
       my $content = $response->content // '';
       return $content || "(no log output)";
     },
-  );
+  ), 'Get pod logs. Available in namespaces: ', '_logs'];
 
   # ---- Tool 8: k8s_events ----
-  my $events_desc = 'Get Kubernetes events for debugging. Available in: ' . $self->_available_resources_desc('list');
-  $self->tool(
+  my $events_desc = 'Get Kubernetes events for debugging.';
+  push @desc_map, [$self->tool(
     name        => 'k8s_events',
     description => $events_desc,
     input_schema => {
@@ -1194,11 +1221,11 @@ sub _register_tools {
         items => $summaries,
       });
     },
-  );
+  ), 'Get Kubernetes events for debugging. Available in: ', 'list'];
 
   # ---- Tool 9: k8s_rollout_restart ----
-  my $restart_desc = 'Trigger rolling restart of a Deployment, StatefulSet, or DaemonSet. Available: ' . $self->_available_resources_desc('patch');
-  $self->tool(
+  my $restart_desc = 'Trigger rolling restart of a Deployment, StatefulSet, or DaemonSet.';
+  push @desc_map, [$self->tool(
     name        => 'k8s_rollout_restart',
     description => $restart_desc,
     input_schema => {
@@ -1266,11 +1293,11 @@ sub _register_tools {
         ($ns ? (namespace => $ns) : ()),
       });
     },
-  );
+  ), 'Trigger rolling restart of a Deployment, StatefulSet, or DaemonSet. Available: ', 'patch'];
 
   # ---- Tool 10: k8s_apply ----
-  my $apply_desc = 'Create or update a Kubernetes resource (like kubectl apply). Available: ' . $self->_available_resources_desc('create');
-  $self->tool(
+  my $apply_desc = 'Create or update a Kubernetes resource (like kubectl apply).';
+  push @desc_map, [$self->tool(
     name        => 'k8s_apply',
     description => $apply_desc,
     input_schema => {
@@ -1359,8 +1386,9 @@ sub _register_tools {
         ($ns ? (namespace => $ns) : ()),
       });
     },
-  );
+  ), 'Create or update a Kubernetes resource (like kubectl apply). Available: ', 'create'];
 
+  $self->_tool_desc_map(\@desc_map);
 }
 
 sub run_stdio {
@@ -1382,6 +1410,7 @@ script.
 =cut
 
   $self = $self->new unless ref $self;
+  $self->_update_tool_descriptions;
   $self->to_stdio;
 }
 

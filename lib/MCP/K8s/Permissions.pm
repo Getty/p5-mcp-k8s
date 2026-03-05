@@ -84,6 +84,11 @@ has _rules => (
   default => sub { {} },
 );
 
+has _discovered => (
+  is      => 'rw',
+  default => 0,
+);
+
 sub discover {
   my ($self) = @_;
 
@@ -120,6 +125,7 @@ inaccessible namespace won't prevent discovery of the others.
   }
 
   $self->_rules(\%rules);
+  $self->_discovered(1);
   return $self;
 }
 
@@ -170,6 +176,12 @@ sub _discover_namespace {
   return \%ns_rules;
 }
 
+sub ensure_discovered {
+  my ($self) = @_;
+  return $self if $self->_discovered;
+  return $self->discover;
+}
+
 sub can_do {
   my ($self, $verb, $resource_plural, $namespace) = @_;
 
@@ -188,6 +200,7 @@ given namespace, the check succeeds.
 
 =cut
 
+  $self->ensure_discovered;
   $namespace //= '';
 
   my $ns_rules = $self->_rules->{$namespace};
@@ -220,6 +233,7 @@ Subresources (e.g. C<pods/log>) are excluded from the returned list.
 
 =cut
 
+  $self->ensure_discovered;
   $namespace //= '';
 
   my $ns_rules = $self->_rules->{$namespace};
@@ -256,6 +270,7 @@ Excludes the cluster scope (empty string).
 
 =cut
 
+  $self->ensure_discovered;
   return grep { $_ ne '' } sort keys %{ $self->_rules };
 }
 
@@ -273,6 +288,7 @@ log access on most clusters).
 
 =cut
 
+  $self->ensure_discovered;
   $namespace //= '';
   my $ns_rules = $self->_rules->{$namespace};
   return 0 unless $ns_rules;
@@ -318,6 +334,7 @@ Example output:
 
 =cut
 
+  $self->ensure_discovered;
   my @lines;
   push @lines, "# Kubernetes RBAC Permissions\n";
 
