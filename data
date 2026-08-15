@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-08-15T23:35:34Z
+created: 2026-08-15T22:08:49Z
+id: 11
+priority: medium
+started: 2026-08-15T23:35:34Z
+status: done
+tags:
+- feature
+title: Status subresource writes are silently dropped — no patch_status tool
+updated: 2026-08-15T23:35:34Z
+---
+
+From the Kubernetes::REST 1.107 Changes: any resource with a status subresource — every CRD carrying 'status' under 'subresources', plus the built-ins that always had one — has its status stripped by the API server on every write to the main endpoint, which then answers 2xx anyway. create(), update(), patch() and server-side apply 'all looked like they worked and stored nothing'.
+
+MCP::K8s exposes k8s_create / k8s_patch / k8s_apply, all on the main endpoint. An LLM patching a status gets back {"status":"patched"} and nothing happened — a silent lie to the model, which is the worst failure mode this server has.
+
+1.107 added patch_status() (same arguments as patch(), both call forms, same patch types, but defaulting to merge patch because custom resources answer 415 to strategic) and update_status() (the PUT counterpart of update()).
+
+Decide: a k8s_patch_status tool, a status flag on k8s_patch, or an explicit documented gap.
+
+If it becomes an 11th tool, the tool list lives in FOUR places — lib/MCP/K8s.pm POD, bin/mcp-k8s POD, README.md, _register_tools — plus _tool_desc_map, or it keeps its static description forever.
+
+RBAC verb is 'patch' on <plural>/status. Note _discover_resource_plurals skips names containing '/', so subresources are invisible to the plural cache — can_do would need the base plural or the cache needs to learn subresources.
