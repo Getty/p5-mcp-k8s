@@ -1,4 +1,17 @@
 {{$NEXT}}
+  - Fix Moo predicate traps in _build_api: env-only MCP_K8S_TOKEN,
+    MCP_K8S_SERVER and MCP_K8S_CONTEXT are now honoured at all three
+    auth tiers. The has_token / has_server_endpoint / has_context_name
+    predicates stay false on a lazy default-only attribute until the
+    reader fires, so the previous gate silently dropped env-only
+    settings (closes #1).
+  - Add t/09-auth-regression.t with 19 subtests covering the predicate
+    traps across all three auth tiers, including env-only, empty-string,
+    constructor-arg and predicate-state-after-build variants.
+  - Bump dependency minimums: MCP 0.06 -> 0.15, Kubernetes::REST and
+    IO::K8s 1.002 -> 1.107.
+  - Add Claude Code project tooling (CLAUDE.md, .claude/agents,
+    .claude/rules, .claude/skills, .gitignore patterns).
 
 0.002     2026-03-05 21:29:05Z
 
