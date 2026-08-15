@@ -1,0 +1,36 @@
+---
+class: standard
+completed: 2026-08-15T23:35:18Z
+created: 2026-08-15T22:08:32Z
+id: 7
+priority: high
+started: 2026-08-15T23:35:18Z
+status: done
+tags:
+- docs
+- upstream
+title: 'README/POD: Net::Async::MCP path is broken under MCP 0.15'
+updated: 2026-08-15T23:35:18Z
+---
+
+README.md:169 and lib/MCP/K8s.pm:1549 document Net::Async::MCP->new(server => $k8s->server). Verified broken against MCP 0.15 + Net::Async::MCP 0.003:
+
+    MCP error -32602: Missing protocol version
+
+Cause (not ours): MCP 0.15 speaks protocol revision 2026-07-28, which is stateless — no initialize handshake, and every request must carry params._meta with 'io.modelcontextprotocol/protocolVersion' plus 'io.modelcontextprotocol/clientCapabilities' (MCP::Server::_check_fields). MCP::Server::Transport::Stdio builds its context with legacy => legacy_request(...), so pre-0.15 clients keep working — that is why bin/mcp-k8s is fine and a stdio wire test passes cleanly. Net::Async::MCP::Transport::InProcess calls handle($request, MCP::Server::Context->new) with no legacy flag, and 0.003 still sends the old initialize with protocolVersion => '2025-11-25'.
+
+The bug is in Net::Async::MCP, the false promise is in our docs. No local net-async-mcp checkout, so no upstream ticket filed.
+
+Decide: drop the example, mark it as needing a future Net::Async::MCP, or fix that dist. sub server { $_[0] } stays either way — cheap API promise, not the cause. Net::Async::MCP is not in cpanfile, it is a documented optional path only.
+
+--- RESOLUTION (not a repo bug — stale local install) ---
+The maintainer pointed out that Net::Async::MCP 0.004 was released the same day; the
+local checkout had 0.003. Upgraded and re-measured: the documented path works against
+MCP 0.15 + Net::Async::MCP 0.004, including $mcp->initialize.
+  initialize OK / README-Pfad OK: 10 Tools / call_tool OK
+0.004 pulled the protocol negotiation forward. Nothing in MCP::K8s was wrong and no
+warning was written into POD.
+Shipped instead: a version constraint (Net::Async::MCP 0.004+) in README and in the
+demo script's requirements, and a note in CLAUDE.md plus the rules file to check the
+installed Net::Async::MCP version before believing a finding at this spot. Cross-checked
+MCP, IO::K8s and Kubernetes::REST against CPAN at the same time — all three were current.
