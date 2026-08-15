@@ -269,16 +269,23 @@ sub _read_file {
 sub _build_api {
   my ($self) = @_;
 
+  # Materialize the env-backed attributes up-front. The lazy `default`
+  # subs read $ENV{MCP_K8S_TOKEN} / $ENV{MCP_K8S_SERVER}, but `has_token`
+  # and `has_server_endpoint` are still false until the reader is called
+  # once. Gating Tier 1 on the predicates silently skipped Tier 1 when the
+  # token came purely from the environment — see Issue #1.
+  my $token = $self->token;
+
   # Tier 1: Direct token from MCP_K8S_TOKEN
-  if ($self->has_token && defined $self->token && length $self->token) {
-    my $endpoint = ($self->has_server_endpoint && $self->server_endpoint)
-      ? $self->server_endpoint
-      : $IN_CLUSTER_DEFAULT_SERVER;
+  if (defined $token && length $token) {
+    my $endpoint = $self->server_endpoint;
+    $endpoint = $IN_CLUSTER_DEFAULT_SERVER
+      unless defined $endpoint && length $endpoint;
     my %server = (endpoint => $endpoint);
     $server{ssl_ca_file} = $IN_CLUSTER_CA_PATH if -f $IN_CLUSTER_CA_PATH;
     return Kubernetes::REST->new(
       server      => \%server,
-      credentials => { token => $self->token },
+      credentials => { token => $token },
     );
   }
 
@@ -286,9 +293,9 @@ sub _build_api {
   if (-f $IN_CLUSTER_TOKEN_PATH) {
     my $sa_token = $self->_read_file($IN_CLUSTER_TOKEN_PATH);
     if (defined $sa_token && length $sa_token) {
-      my $endpoint = ($self->has_server_endpoint && $self->server_endpoint)
-        ? $self->server_endpoint
-        : $IN_CLUSTER_DEFAULT_SERVER;
+      my $endpoint = $self->server_endpoint;
+      $endpoint = $IN_CLUSTER_DEFAULT_SERVER
+        unless defined $endpoint && length $endpoint;
       my %server = (endpoint => $endpoint);
       $server{ssl_ca_file} = $IN_CLUSTER_CA_PATH if -f $IN_CLUSTER_CA_PATH;
       return Kubernetes::REST->new(
@@ -298,9 +305,15 @@ sub _build_api {
     }
   }
 
-  # Tier 3: Kubeconfig (original behavior)
+  # Tier 3: Kubeconfig. Same predicate-with-lazy-default trap as Tier 1:
+  # `has_context_name` stays false until the reader fires, so an env-only
+  # MCP_K8S_CONTEXT would be silently dropped. Pass the materialized value
+  # through, dropping empty/undef so Kubeconfig keeps its current-context
+  # fallback when nothing is set.
+  my $context_name = $self->context_name;
   my %kc_args;
-  $kc_args{context_name} = $self->context_name if $self->has_context_name;
+  $kc_args{context_name} = $context_name
+    if defined $context_name && length $context_name;
   my $kc = Kubernetes::REST::Kubeconfig->new(%kc_args);
   return $kc->api;
 }

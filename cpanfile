@@ -1,8 +1,8 @@
 requires 'perl', '5.020';
 requires 'Moo';
-requires 'MCP', '0.06';
-requires 'Kubernetes::REST', '1.002';
-requires 'IO::K8s', '1.002';
+requires 'MCP', '0.15';
+requires 'Kubernetes::REST', '1.107';
+requires 'IO::K8s', '1.107';
 requires 'JSON::MaybeXS', '1.002000';
 requires 'namespace::clean';
 
