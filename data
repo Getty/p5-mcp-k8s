@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-08-15T23:35:26Z
+created: 2026-08-15T22:08:40Z
+id: 9
+priority: medium
+started: 2026-08-15T23:35:26Z
+status: done
+tags:
+- performance
+- upstream
+title: Plural tier 2 can trigger a full /openapi/v2 download for a result it discards
+updated: 2026-08-15T23:35:26Z
+---
+
+_resource_plural tier 2 calls $self->api->expand_class($resource). In Kubernetes::REST 1.107 that is delegated to the lazy 'k8s' attribute -> resource_map -> resource_map_from_cluster (default 1) -> fetch_resource_map -> GET /openapi/v2, the full OpenAPI spec.
+
+So the first non-static Kind pays a multi-MB cluster roundtrip, tier 2 returns undef anyway (see the tier-2 docs ticket), and tier 3 then does its OWN discovery over /api/v1 + /apis. Two discovery mechanisms stacked, the expensive one useless.
+
+Lazy per Kubernetes::REST instance — once per process, not per call. _load_resource_map_from_cluster carps rather than dying, and STDOUT stays clean, so stdio protocol is unaffected.
+
+Options: pass resource_map_from_cluster => 0 in _build_api; skip tier 2 unless the class can('resource_plural') without forcing resource_map; or drop tier 2 and let tier 3 own it.
+
+Constraint: _build_api must stay lazy — no ->api access in BUILD, the test suite and every embedding depend on MCP::K8s->new working without a cluster.
+
+Upstream: kubernetes-rest #15 (expand_class should not force the fetch). If that lands, this may need nothing but a comment.
