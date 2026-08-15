@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-08-15T23:35:14Z
+created: 2026-08-15T21:08:48Z
+id: 1
+priority: low
+started: 2026-08-15T23:35:14Z
+status: done
+tags:
+- tech-debt
+title: Refactor k8s_apply 409-detection from regex to structured
+updated: 2026-08-15T23:35:14Z
+---
+
+lib/MCP/K8s.pm k8s_apply recognises create-conflict via regex against error string (/409|AlreadyExists/i). Fragile by construction — any client-layer change to the error format silently degrades apply to 'create failed'. Same pattern as Issue #1: structure beats regex. Kubernetes::REST raises typed errors; switch to isa-check or ->code == 409.
+
+--- RESOLUTION (premise was wrong, regex stays) ---
+Verified against installed Kubernetes::REST 1.107: create() -> _check_response() croaks
+a plain string, 'Kubernetes API error (create <class>): <status> <body>'. Error/RemoteError
+are labelled compatibility helpers for deprecated v0 handling and their own POD says the
+v1 API croaks instead of throwing structured exceptions; zero ->throw/RemoteError hits
+anywhere else in the installed tree. There is no typed error and no ->code to check, so
+'structure beats regex' had nothing to bind to.
+Done instead: extracted _is_conflict_error (match unchanged), documented why a narrower
+match on the current croak format would be WORSE (any upstream rewording becomes a false
+negative, the wide match survives it), and replaced the toy mock ('409 Conflict:
+AlreadyExists') with the real 1.107 croak including metav1.Status body. Added a 403-on-
+create test that must NOT be patched over, plus a direct predicate unit test.
+Revisit when the client grows typed errors.
