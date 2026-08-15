@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-08-15T23:35:22Z
+created: 2026-08-15T22:08:36Z
+id: 8
+priority: medium
+started: 2026-08-15T23:35:22Z
+status: done
+tags:
+- docs
+title: Docs claim CRD support hangs on plural tier 2+3 — tier 2 is dead with IO::K8s
+  1.107
+updated: 2026-08-15T23:35:22Z
+---
+
+_resource_plural tier 2 asks $class->resource_plural after expand_class. IO::K8s::Role::APIObject::resource_plural defaults to undef and no shipped IO::K8s class overrides it. Measured against 1.107: Pod, Deployment, Ingress, NetworkPolicy, Endpoints all return undef.
+
+No misbehaviour — the guard (defined && length) falls through to tier 3 correctly. But resource_plural is now opt-in for CRD provider classes only, so for everything else it is tier 3 (API discovery) and tier 4 (heuristic) alone.
+
+Wrong claims to fix:
+  - CLAUDE.md: 'CRD-Support (Cilium etc.) haengt komplett an Tier 2+3'
+  - lib/MCP/K8s.pm =method _resource_plural: 'IO::K8s class resource_plural() method (supports CRDs like Cilium)'
+
+Both promise a tier that only fires for a provider class carrying its own resource_plural. Cilium via plain IO::K8s does not.
+
+Upstream: io-k8s-p5 #33 asks IO::K8s to ship plurals for built-ins. If that lands, tier 2 comes back to life and these docs become true again — so word the fix for the current state without ripping the tier out.
