@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-08-15T23:35:30Z
+created: 2026-08-15T22:08:44Z
+id: 10
+priority: low
+started: 2026-08-15T23:35:30Z
+status: done
+tags:
+- tech-debt
+title: k8s_logs uses private _request instead of Kubernetes::REST log()
+updated: 2026-08-15T23:35:30Z
+---
+
+k8s_logs hand-builds the path
+
+    my $path = "/api/v1/namespaces/$ns/pods/$name/log";
+
+and calls $self->api->_request('GET', $path, ...) — a private method. Kubernetes::REST 1.107 has a public log(), taking both log('Pod','name',...) and log('Pod', name => ...), with container/follow/tailLines/sinceSeconds/sinceTime/timestamps/previous/limitBytes/on_line. 1.107's build_path() also gained a subresource argument appending /log, /status, /exec, /attach, /portforward.
+
+Switching drops a private-API dependency and gets follow/on_line streaming for free.
+
+Keep the RBAC gate (can_read_logs) and the current return contract. t/05-server-tools.t mocks _request, so the mock moves with it — and per house rules, say out loud what that mock is asserting before changing it.
