@@ -1,0 +1,34 @@
+---
+class: standard
+completed: 2026-08-16T01:54:09Z
+created: 2026-08-16T01:35:22Z
+id: 12
+priority: high
+started: 2026-08-16T01:54:09Z
+status: done
+tags:
+- bug
+- docs
+title: Tool descriptions stay static on every path except run_stdio
+updated: 2026-08-16T01:54:09Z
+---
+
+_update_tool_descriptions is called in exactly one place: run_stdio. Every other way of serving the same object — the Net::Async::MCP path documented in README.md and lib/MCP/K8s.pm POD, an embedded $k8s->to_stdio, and the to_action HTTP transport inherited from MCP::Server since 0.002 — hands the LLM the static descriptions.
+
+Measured on the exact README flow (no run_stdio, no manual call), mocked API, namespace test-ns:
+
+    k8s_list: List Kubernetes resources.
+    k8s_get:  Get a single Kubernetes resource.
+
+versus what the same server produces after _update_tool_descriptions:
+
+    k8s_list: List Kubernetes resources. Available: test-ns: configmaps,
+              daemonsets, deployments, events, pods, services, statefulsets
+
+Permission checks are NOT affected — can_do calls ensure_discovered itself, so tool calls are gated correctly and a denied call still returns a proper refusal. What is lost is the RBAC-aware description, which CLAUDE.md calls out as functionality and not cosmetics: it is how the LLM learns which resources exist per namespace without guessing. On the degraded path it guesses, gets a denial, and burns a turn.
+
+Worse, there is no legitimate fix for a user: _update_tool_descriptions is private. The README path cannot be repaired from the outside without calling an underscore method.
+
+Suggested fix: override _tools (MCP::Server calls it on every tools/list, and it is the single funnel for all transports) and have it call _update_tool_descriptions, which is already idempotent via the _descriptions_updated guard. That covers stdio, HTTP and InProcess in one place, and run_stdio's own call becomes redundant but harmless. Lazy construction is preserved — nothing touches ->api until a request arrives, so MCP::K8s->new without a cluster keeps working.
+
+Check while doing it: tools/list would then trigger discovery, which is exactly what run_stdio already does; and _tools receives ($self, $context) and emits the 'tools' event, so the override must keep both.
