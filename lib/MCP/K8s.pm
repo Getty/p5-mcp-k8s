@@ -1032,11 +1032,19 @@ sub _register_tools {
       if ($output eq 'json') {
         return $self->_to_json($obj->TO_JSON);
       } elsif ($output eq 'yaml') {
-        eval { require YAML::XS };
-        if ($@) {
-          return $self->_to_json($obj->TO_JSON);
+        # IO::K8s::Role::APIObject::to_yaml, not a YAML dump of TO_JSON.
+        # TO_JSON hands out JSON::PP::Boolean objects for every boolean field,
+        # and a generic dumper serialises those as Perl internals —
+        # "hostNetwork: !!perl/scalar:JSON::PP::Boolean 1" instead of
+        # "hostNetwork: true", which kubectl apply rejects. to_yaml runs
+        # YAML::PP with the JSON schema and boolean => 'JSON::PP', which is
+        # what makes the output a manifest.
+        unless ($obj->can('to_yaml')) {
+          return "Cannot render $resource/$name as YAML: " . ref($obj)
+               . " does not implement to_yaml (not a top-level Kubernetes API"
+               . " object). Retry with output 'json'.";
         }
-        return YAML::XS::Dump($obj->TO_JSON);
+        return $obj->to_yaml;
       } else {
         return $self->_to_json($self->_format_resource_summary($obj));
       }

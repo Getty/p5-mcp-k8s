@@ -62,6 +62,9 @@ use JSON::MaybeXS;
 
   sub get {
     my ($self, $kind, %args) = @_;
+    # Lets a test hand back a real IO::K8s object where the mock one would
+    # not carry the behaviour under test (to_yaml, JSON::PP booleans).
+    return $self->{get_object} if $self->{get_object};
     return MockK8sObject->new(
       kind     => $kind,
       metadata => {
@@ -360,6 +363,75 @@ subtest 'k8s_get json output' => sub {
   my $data = JSON::MaybeXS->new->decode($result);
   is($data->{kind}, 'Pod', 'json output has kind');
   is($data->{metadata}{name}, 'my-pod', 'json output has name in metadata');
+};
+
+subtest 'k8s_get yaml output renders real YAML booleans' => sub {
+  # Measured on a real IO::K8s Pod, not a hand-rolled struct: TO_JSON hands
+  # out JSON::PP::Boolean objects for every boolean field, and dumping that
+  # with a generic YAML dumper writes Perl internals —
+  #   hostNetwork: !!perl/scalar:JSON::PP::Boolean 1
+  # which kubectl apply rejects. Only IO::K8s' own to_yaml (YAML::PP with
+  # the JSON schema) turns them into true/false. A mock returning plain 1/0
+  # could not tell the two apart, so the fixture has to be the real class.
+  my $pod = IO::K8s->new->struct_to_object('IO::K8s::Api::Core::V1::Pod', {
+    apiVersion => 'v1',
+    kind       => 'Pod',
+    metadata   => { name => 'boolean-pod', namespace => 'test-ns' },
+    spec       => {
+      hostNetwork => 1,
+      containers  => [{
+        name            => 'app',
+        image           => 'nginx',
+        securityContext => {
+          privileged             => 0,
+          readOnlyRootFilesystem => 1,
+        },
+      }],
+    },
+  });
+  isa_ok($pod->TO_JSON->{spec}{hostNetwork}, 'JSON::PP::Boolean',
+    'fixture really carries a JSON::PP::Boolean');
+
+  my $yaml_api = MockK8sAPI->new;
+  $yaml_api->{get_object} = $pod;
+  my $yaml_k8s = MCP::K8s->new(
+    api        => $yaml_api,
+    namespaces => ['test-ns'],
+  );
+
+  my $tool = find_tool($yaml_k8s, 'k8s_get');
+  my $yaml = $tool->code->($tool, {
+    resource  => 'Pod',
+    name      => 'boolean-pod',
+    namespace => 'test-ns',
+    output    => 'yaml',
+  });
+
+  like($yaml, qr/^\s*hostNetwork: true$/m,   'true boolean is YAML true');
+  like($yaml, qr/^\s*privileged: false$/m,   'false boolean is YAML false');
+  like($yaml, qr/^\s*readOnlyRootFilesystem: true$/m,
+    'nested boolean too');
+  unlike($yaml, qr/perl\/scalar|JSON::PP::Boolean/,
+    'no Perl internals anywhere in the manifest');
+};
+
+subtest 'k8s_get yaml output refuses loudly when it cannot render YAML' => sub {
+  # MockK8sObject is not a top-level IO::K8s API object and has no to_yaml.
+  # The old code quietly answered with JSON here — the caller asked for a
+  # manifest and got something else without being told.
+  my $tool = find_tool($k8s->server, 'k8s_get');
+  my $result = $tool->code->($tool, {
+    resource  => 'Pod',
+    name      => 'my-pod',
+    namespace => 'test-ns',
+    output    => 'yaml',
+  });
+
+  like($result, qr/Cannot render Pod\/my-pod as YAML/,
+    'says what it could not do');
+  like($result, qr/does not implement to_yaml/, 'and why');
+  like($result, qr/output 'json'/, 'and what to do instead');
+  unlike($result, qr/^\s*\{/, 'no silent JSON in place of the YAML');
 };
 
 subtest 'k8s_get permission denied' => sub {
