@@ -44,6 +44,9 @@ holt sie nach.
 **MCP::K8s** (lib/MCP/K8s.pm) **erbt** von `MCP::Server` (seit 0.002), komponiert ihn
 nicht mehr. `sub server { $_[0] }` ist Rückwärtskompatibilität für den dokumentierten
 `Net::Async::MCP->new(server => $k8s->server)`-Pfad im README — nicht entfernen.
+Der Pfad ist gegen MCP 0.15 + Net::Async::MCP 0.004 verifiziert; 0.003 scheitert an
+der stateless Revision 2026-07-28 (`-32602 Missing protocol version`). Bei einem
+Befund an dieser Stelle **zuerst die installierte Net::Async::MCP-Version prüfen.**
 
 **Discovery ist lazy, und das ist eine Zusage.** `BUILD` registriert nur Tools; der
 erste RBAC-Call passiert in `ensure_discovered`, ausgelöst durch einen Tool-Call oder
@@ -65,14 +68,30 @@ der Map behält für immer seine statische Beschreibung.
 
 `k8s_permissions` (immer erlaubt), `k8s_list`, `k8s_get`, `k8s_create`, `k8s_patch`,
 `k8s_delete`, `k8s_logs`, `k8s_events`, `k8s_rollout_restart`, `k8s_apply` — alle in
-`_register_tools`. Zwei sind zusammengesetzt:
+`_register_tools`. Drei haben Besonderheiten:
+
+- **`k8s_patch`** nimmt einen optionalen `subresource`-Parameter (`enum: ['status']`,
+  plus Runtime-Check für Clients, die das Schema ignorieren). Mit `status` geht der
+  Call auf `patch_status()` statt `patch()` und der Patch-Typ-Default kippt auf
+  **merge** statt strategic — Custom Resources antworten auf einen Strategic-Merge mit
+  415. Ein explizit übergebener `patch_type` gewinnt. Das ist kein Komfort-Feature:
+  ohne den Subresource-Pfad streicht der API-Server jeden Status aus einem Write ans
+  Haupt-Endpoint und antwortet **trotzdem 2xx** — das Tool meldete „patched" und nichts
+  war gespeichert. Das RBAC-Gate prüft `<plural>/status`, nicht `<plural>`; ein
+  Main-Endpoint-Patch verschenkt keinen Status-Write.
 
 - **`k8s_rollout_restart`** patcht die Pod-Template-Annotation
   `kubectl.kubernetes.io/restartedAt` mit Timestamp — derselbe Mechanismus wie
   `kubectl rollout restart`. Braucht `patch`, nicht `update`.
 - **`k8s_apply`** versucht `create` und fällt bei 409/AlreadyExists auf einen
-  Strategic-Merge-Patch zurück. Die Conflict-Erkennung ist ein Regex gegen den
-  Fehlerstring (`/409|AlreadyExists/i`) — fragil per Konstruktion.
+  Strategic-Merge-Patch zurück. Die Conflict-Erkennung sitzt in `_is_conflict_error`
+  und ist ein Regex gegen den Fehlerstring (`/409|AlreadyExists/i`) — nicht aus
+  Bequemlichkeit: Kubernetes::REST 1.107 `croak`t einen reinen String
+  (`Kubernetes API error (create <class>): <status> <body>`), typisierte Fehler gibt
+  es nur in den v0-Kompatibilitätsmodulen. Ein engerer Match auf genau dieses Format
+  wäre **schlechter** — jede Umformulierung upstream ergäbe ein False Negative,
+  während der weite Match sie überlebt. Neu bewerten, sobald der Client typisierte
+  Fehler bekommt.
 
 **Warum 10 generische Tools statt hunderter spezifischer:** Kubernetes hat 50+
 Built-in-Typen plus beliebige CRDs. Generische Tools mit `resource`-Parameter spiegeln
@@ -87,10 +106,22 @@ RBAC spricht Plural (`pods`), die API spricht Kind (`Pod`). `_resource_plural`
 einmalig gecacht, Subresources (`name` enthält `/`) übersprungen, (4) Heuristik
 (lowercase, `s`, `ys`→`ies`).
 
-CRD-Support (Cilium etc.) hängt komplett an Tier 2+3. Tier 3 schluckt alle Fehler
-still — Absicht, damit ein Cluster ohne Discovery-Rechte den Server nicht umbringt.
-Der Preis: **eine falsche Pluralisierung sieht aus wie ein Permission-Denied.** Bei
-unerwartetem „Permission denied" immer zuerst den Plural prüfen.
+**Tier 2 feuert in der Praxis nicht.** Seit IO::K8s 1.107 definiert keine einzige
+ausgelieferte Klasse ein `resource_plural` — `Role::APIObject` liefert `undef`, und
+der einzige Override im ganzen Baum steht in einem POD-Beispiel. Der Tier greift nur
+noch für CRD-Provider-Klassen aus einer lokal registrierten resource_map. Zusätzlich
+ist er hinter einen Guard gelegt: würde der Client seine resource_map vom Cluster
+holen (`resource_map_from_cluster`, Default 1 in Kubernetes::REST 1.107), wird Tier 2
+übersprungen — `expand_class` zieht sonst über `k8s`→`resource_map` einen vollen
+`/openapi/v2`-Download, um danach `undef` zu liefern. **CRD-Support ruht damit
+faktisch auf Tier 3.** Upstream: io-k8s-p5 #33 (Plurale für Built-ins),
+kubernetes-rest #15 (`expand_class` soll nicht fetchen); landet eins davon, lebt
+Tier 2 wieder.
+
+Tier 3 schluckt alle Fehler still — Absicht, damit ein Cluster ohne Discovery-Rechte
+den Server nicht umbringt. Der Preis: **eine falsche Pluralisierung sieht aus wie ein
+Permission-Denied.** Bei unerwartetem „Permission denied" immer zuerst den Plural
+prüfen.
 
 ### Auth — 3-Tier
 
@@ -122,6 +153,23 @@ Cluster-Scope. Fehler pro Namespace werden gewarnt und übersprungen, nicht prop
 auf der Ressource, Wildcard-Ressource mit Verb, Wildcard/Wildcard. Alle vier sind live —
 wer einen wegoptimiert, bricht cluster-admin, ohne einen Narrow-Role-Test zu brechen.
 
+**Subresources stehen in der Map**, so wie der API-Server sie meldet (`pods/log`,
+`deployments/status`). RBAC behandelt sie als eigenständige Ressourcen — `patch` auf
+`deployments` gewährt **kein** `patch` auf `deployments/status` —, also fragt der
+Aufrufer mit dem vollen Namen: `can_do('patch', 'deployments/status', $ns)`. Kollision
+mit einem Basis-Plural ist ausgeschlossen, der enthält nie ein `/`. Gefiltert wird auf
+der Darstellungsseite: `allowed_resources` lässt sie weg, damit die Tool-Beschreibungen
+bei den Haupt-Endpoints bleiben. (`summary` zeigt sie — hat es für `pods/log` immer
+schon getan.)
+
+Bis 0.003 warf `_discover_namespace` Subresources außer `pods/log` weg. Folge: eine
+korrekt eng geschnittene Status-Writer-Role bekam eine **falsche Absage**. Nebeneffekt
+der Reparatur: ein Namespace, dessen einzige Rechte Subresources sind, taucht jetzt in
+`allowed_namespaces` auf — `discover` speichert nur bei `keys %$ns_rules`. Das kann
+`_resolve_namespace` vom Auto-Fill abbringen, wenn dadurch mehr als ein Namespace
+erreichbar wird. Richtige Richtung (fragen statt raten), aber eine echte
+Verhaltensänderung.
+
 ## Env-Vars
 
 | Variable | Default | Wirkung |
@@ -147,14 +195,15 @@ keiner darf einen brauchen.**
 | Datei | Deckt ab |
 |---|---|
 | `t/00-load.t` | Ladbarkeit der drei Module |
-| `t/01-permissions.t` | RBAC-Discovery, `can_do`-Wildcards, `allowed_*`, `summary` |
+| `t/01-permissions.t` | RBAC-Discovery, `can_do`-Wildcards, Subresources, `allowed_*`, `summary` |
 | `t/02-resource-plurals.t` | 4-Tier-Pluralisierung |
 | `t/03-namespace-resolution.t` | Auto-Fill genau bei einem Namespace |
 | `t/04-format-helpers.t` | Summary-/List-Formatierung |
-| `t/05-server-tools.t` | Tool-Registrierung und -Ausführung inkl. `force_409`-Pfad von `k8s_apply` |
+| `t/05-server-tools.t` | Tool-Registrierung und -Ausführung, `force_409`-Pfad von `k8s_apply`, `k8s_patch`-Statuspfad |
 | `t/06-kubernetes-alias.t` | `MCP::Kubernetes` ist `MCP::K8s` |
 | `t/07-auth-alternatives.t` | Token-/in-cluster-/Kubeconfig-Tiers |
-| `t/08-resource-discovery.t` | API-Discovery-Endpunkte, Subresource-Filter |
+| `t/08-resource-discovery.t` | API-Discovery-Endpunkte, Subresource-Filter, Tier-2-Guard |
+| `t/09-auth-regression.t` | Predicate-Fallen der Auth-Tiers (env-only, leerer String) |
 
 Zwei Mock-Details, die falsch nachgebaut lautlos das Falsche testen: der
 `SelfSubjectRulesReview` wird per `new_object` gebaut und per **`create`** submitted
@@ -174,6 +223,12 @@ Maintainers — siehe `.claude/rules/mcp-k8s-rules.md`.
 
 - **`can_do` nimmt den Plural, nicht das Kind.** `can_do('list', 'Pod')` gibt still `0`
   und sieht aus wie eine fehlende Permission.
+- **Subresources sind eigene RBAC-Ressourcen.** `can_do('patch', 'deployments/status')`
+  ist eine andere Frage als `can_do('patch', 'deployments')` — und das ist keine
+  Pedanterie, sondern die Zusage, dass ein Main-Endpoint-Patch keinen Status-Write
+  verschenkt. Der Plural-Cache hilft hier nicht: `_discover_resource_plurals`
+  überspringt Namen mit `/`, den Basis-Plural über `_resource_plural` holen und
+  `/status` selbst anhängen.
 - **RBAC ist die einzige Autorisierungsschicht, absichtlich.** Kann der ServiceAccount
   Secrets lesen, kann das LLM es auch. Die Antwort darauf ist eine engere Role, kein
   Filter im Server.

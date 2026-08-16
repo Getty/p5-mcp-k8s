@@ -72,7 +72,7 @@ Add to your project's `.mcp.json`:
 | `k8s_list` | List resources (Pods, Deployments, Services, ...) |
 | `k8s_get` | Get a single resource (summary, JSON, or YAML) |
 | `k8s_create` | Create a resource from a manifest |
-| `k8s_patch` | Partially update a resource (strategic/merge/JSON patch) |
+| `k8s_patch` | Partially update a resource (strategic/merge/JSON patch), optionally its `status` subresource |
 | `k8s_delete` | Delete a resource |
 | `k8s_logs` | Get pod container logs |
 | `k8s_events` | Get events for debugging (filter by object, field selector) |
@@ -154,6 +154,11 @@ When running MCP::K8s as a pod inside the cluster, authentication is automatic:
 ## Langertha Raider Integration
 
 Build an autonomous AI agent that manages your Kubernetes cluster using [Langertha::Raider](https://metacpan.org/pod/Langertha::Raider):
+
+> Needs `Net::Async::MCP` 0.004 or newer. MCP 0.15 implements the stateless
+> protocol revision 2026-07-28, in which every request carries its protocol
+> version in `params._meta`; 0.003 still sent the older handshake and fails
+> here with `-32602 Missing protocol version`.
 
 ```perl
 use IO::Async::Loop;

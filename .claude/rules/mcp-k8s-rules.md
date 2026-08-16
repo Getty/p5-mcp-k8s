@@ -112,11 +112,17 @@ a category of exception.
 - **`_resolve_namespace` returns `undef` when several namespaces are reachable.**
   Auto-picking the first one would be a silent misfire against a live cluster.
 - **`k8s_apply` recognizes the create-conflict by regex** (`/409|AlreadyExists/i`)
-  against the error string. Fragile by construction; leave a regression test if touched.
+  against the error string, in `_is_conflict_error`. Not laziness: Kubernetes::REST
+  1.107 croaks a plain string and only its deprecated v0 modules carry typed errors,
+  so there is nothing structured to check. Narrowing the match to the current croak
+  format would be worse — an upstream rewording becomes a false negative. Revisit when
+  the client grows typed errors; leave a regression test if touched.
 - **Env-vars only, no command-line flags.** The configuration surface must stay
   expressible inside MCP client JSON (`.mcp.json`, Claude Desktop config).
 - **`sub server { $_[0] }` is documented API**, not dead code — the README's
-  `Net::Async::MCP->new(server => $k8s->server)` path depends on it.
+  `Net::Async::MCP->new(server => $k8s->server)` path depends on it. Verified against
+  MCP 0.15 + Net::Async::MCP 0.004; 0.003 fails it with `-32602 Missing protocol
+  version`. Check the installed Net::Async::MCP version before believing a finding here.
 
 ## Perl specifics — reference, don't restate
 
