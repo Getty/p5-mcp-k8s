@@ -1,4 +1,27 @@
 {{$NEXT}}
+  - Fix RBAC-aware tool descriptions being served only by run_stdio.
+    _update_tool_descriptions was called from that one place, so every
+    other way of serving the same object — the Net::Async::MCP path
+    documented in README, an embedded to_stdio, and the to_action HTTP
+    transport inherited from MCP::Server — handed the LLM the static
+    descriptions with no word about which resources exist per namespace.
+    Permission checks were never affected, only what the model was told.
+    _tools is now overridden, which is the single funnel every transport
+    passes on tools/list and tools/call, and it delegates to SUPER so the
+    list copy and the 'tools' event cannot drift. Construction stays
+    lazy: nothing touches the API until a request arrives.
+    Note: on a server whose api cannot be built at all, tools/list now
+    answers with a JSON-RPC internal error where it previously returned
+    the static list. tools/call already failed that way.
+  - Fix k8s_get output => 'yaml' emitting invalid YAML. It dumped
+    TO_JSON through YAML::XS, which does not know JSON::PP::Boolean and
+    wrote "hostNetwork: !!perl/scalar:JSON::PP::Boolean 1" instead of
+    "hostNetwork: true" — not a manifest kubectl would accept, for every
+    boolean field of every resource. It now calls IO::K8s's own
+    to_yaml(), which serialises booleans correctly. The optional
+    YAML::XS dependency is gone with it, and so is its silent fallback
+    to JSON: an object that cannot render as YAML now says so instead of
+    quietly answering in the wrong format.
   - k8s_patch takes an optional subresource parameter. With
     subresource => 'status' the call goes to Kubernetes::REST's
     patch_status() and the patch type defaults to merge instead of
@@ -17,10 +40,14 @@
     was not one. Subresources are now stored as the API server reports
     them; they cannot collide with a base plural, which never contains
     a '/'. allowed_resources still filters them, so tool descriptions
-    are byte-identical. Note the follow-on: a namespace whose only
-    grants are subresources now appears in allowed_namespaces, which
-    can stop _resolve_namespace from auto-filling when that makes more
-    than one namespace reachable.
+    are byte-identical.
+  - BEHAVIOUR CHANGE from the subresource fix above: a namespace whose
+    only grants are subresources now appears in allowed_namespaces,
+    because discover() stores a namespace only if it has any rules at
+    all and such a namespace used to end up empty. If that makes more
+    than one namespace reachable, _resolve_namespace stops auto-filling
+    and tools ask for an explicit namespace instead of guessing. Safe
+    direction, but visible on an existing setup.
   - k8s_logs reads the pod's log subresource through Kubernetes::REST's
     public log() instead of hand-building the URL and calling the
     private _request(). One consequence: an HTTP error is now raised by
@@ -53,6 +80,13 @@
     constructor-arg and predicate-state-after-build variants.
   - Bump dependency minimums: MCP 0.06 -> 0.15, Kubernetes::REST and
     IO::K8s 1.002 -> 1.107.
+  - The Net::Async::MCP example in README and in the Langertha demo
+    script needs Net::Async::MCP 0.004 or newer as a consequence of the
+    MCP 0.15 bump. MCP 0.15 implements the stateless protocol revision
+    2026-07-28, where every request carries its protocol version in
+    params._meta; 0.003 still sends the older handshake and fails with
+    "-32602 Missing protocol version". Not a dependency of this
+    distribution — the stdio server and mcp-k8s are unaffected.
   - Add Claude Code project tooling (CLAUDE.md, .claude/agents,
     .claude/rules, .claude/skills, .gitignore patterns).
 

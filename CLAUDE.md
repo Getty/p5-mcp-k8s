@@ -57,8 +57,16 @@ Testsuite und jede Einbettung bauen. Nichts in `BUILD` schieben, das `->api` anf
 Permission-Prüfung, auch nicht wenn die API ohnehin 403 gäbe. Die Prüfung ist das, was
 dem LLM eine lesbare Absage statt eines Stacktraces gibt.
 
-**Tool-Beschreibungen sind Funktionalität, nicht Kosmetik.** `_update_tool_descriptions`
-schreibt sie genau einmal um (Guard `_descriptions_updated`), entlang `_tool_desc_map`
+**Tool-Beschreibungen sind Funktionalität, nicht Kosmetik.** Ausgelöst werden sie über
+`_tools` — die von `MCP::Server` geerbte Methode, durch die **jeder** Transport bei
+`tools/list` und `tools/call` läuft. Die Überschreibung ruft
+`_update_tool_descriptions` und delegiert dann an `SUPER::_tools`, damit Listenkopie und
+`emit('tools', ...)` nicht auseinanderlaufen. Bis 0.003 hing der Aufruf allein in
+`run_stdio`, womit der README-Pfad über `Net::Async::MCP`, ein eingebettetes `to_stdio`
+und der HTTP-Transport `to_action` die statischen Beschreibungen auslieferten. Wer den
+Aufruf zurück nach `run_stdio` schiebt, bricht genau diese drei Pfade, ohne einen Test
+in `t/05` zu brechen — es sei denn den einen, der `tools/list` über `handle` fährt.
+`_update_tool_descriptions` schreibt sie genau einmal um (Guard `_descriptions_updated`), entlang `_tool_desc_map`
 (`[$tool, $base_desc, $verb]` je Tool). Ergebnis: „List Kubernetes resources. Available:
 default: pods, deployments; production: pods". Bei >10 Ressourcen wird auf 10 + `...`
 gekürzt, bei Wildcard steht „all resources". Ein neu registriertes Tool ohne Eintrag in
@@ -223,6 +231,12 @@ Maintainers — siehe `.claude/rules/mcp-k8s-rules.md`.
 
 - **`can_do` nimmt den Plural, nicht das Kind.** `can_do('list', 'Pod')` gibt still `0`
   und sieht aus wie eine fehlende Permission.
+- **YAML kommt von `IO::K8s`, nicht von einem eigenen Dumper.** `k8s_get output=yaml`
+  ruft `$obj->to_yaml` — das serialisiert `JSON::PP::Boolean` korrekt als `true`/`false`.
+  Ein selbstgebautes `YAML::XS::Dump($obj->TO_JSON)` schrieb
+  `!!perl/scalar:JSON::PP::Boolean 1` und damit kein Manifest, das `kubectl` annimmt.
+  `YAML::PP` kommt als hartes `requires` über IO::K8s, keine optionale Dependency, kein
+  stiller Rückfall auf JSON: wer YAML anfordert, bekommt YAML oder eine Absage.
 - **Subresources sind eigene RBAC-Ressourcen.** `can_do('patch', 'deployments/status')`
   ist eine andere Frage als `can_do('patch', 'deployments')` — und das ist keine
   Pedanterie, sondern die Zusage, dass ein Main-Endpoint-Patch keinen Status-Write
