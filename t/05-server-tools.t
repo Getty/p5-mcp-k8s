@@ -5,6 +5,9 @@ use List::Util qw(first);
 
 use MCP::K8s;
 use MCP::K8s::Permissions;
+use IO::K8s;
+use MCP::Server::Context;
+use MCP::Constants qw(META_CLIENT_CAPABILITIES META_PROTOCOL_VERSION PROTOCOL_VERSION);
 use JSON::MaybeXS;
 
 # =================================================================
@@ -647,7 +650,8 @@ subtest 'k8s_logs permission denied' => sub {
 };
 
 subtest 'tool descriptions include available resources after discovery' => sub {
-  # Descriptions are lazy — trigger update (happens automatically in run_stdio)
+  # Descriptions are lazy — trigger update (happens automatically on the
+  # first tools/list, see the _tools override; run_stdio also forces it)
   $k8s->_update_tool_descriptions;
 
   my $list_tool = find_tool($k8s->server, 'k8s_list');
@@ -659,6 +663,56 @@ subtest 'tool descriptions include available resources after discovery' => sub {
 
   my $logs_tool = find_tool($k8s->server, 'k8s_logs');
   like($logs_tool->description, qr/test-ns/, 'logs description mentions namespace');
+};
+
+subtest 'tools/list enriches descriptions on every transport' => sub {
+  # A fresh server that is never run through run_stdio and never has
+  # _update_tool_descriptions called on it — the state of the object on the
+  # documented Net::Async::MCP path, an embedded to_stdio, and the inherited
+  # to_action HTTP transport. All three reach the tool list through
+  # MCP::Server::_tools, so a plain tools/list request has to be enough.
+  my $fresh = MCP::K8s->new(
+    api        => MockK8sAPI->new,
+    namespaces => ['test-ns'],
+  );
+
+  my $static = find_tool($fresh, 'k8s_list')->description;
+  unlike($static, qr/Available:/,
+    'descriptions start static — nothing discovered at construction time');
+
+  # The parent copies the list and emits 'tools' with the request context;
+  # the override has to keep both.
+  my @emitted;
+  $fresh->on(tools => sub {
+    my ($srv, $tools, $ctx) = @_;
+    push @emitted, { count => scalar(@$tools), context => $ctx };
+  });
+
+  my $context = MCP::Server::Context->new;
+  my $response = $fresh->handle({
+    jsonrpc => '2.0',
+    id      => 1,
+    method  => 'tools/list',
+    params  => { _meta => {
+      META_PROTOCOL_VERSION,     PROTOCOL_VERSION,
+      META_CLIENT_CAPABILITIES,  {},
+    } },
+  }, $context);
+
+  ok(!$response->{error}, 'tools/list answered')
+    or diag explain $response->{error};
+
+  my %desc = map { $_->{name} => $_->{description} } @{ $response->{result}{tools} };
+  like($desc{k8s_list}, qr/Available: test-ns: /,
+    'k8s_list carries the discovered resources');
+  like($desc{k8s_list}, qr/\bpods\b/, 'down to the individual resource');
+  like($desc{k8s_get}, qr/Available: test-ns: /, 'k8s_get too');
+  like($desc{k8s_logs}, qr/Available in namespaces: test-ns/,
+    'and the log namespaces on k8s_logs');
+
+  is(scalar(@emitted), 1, "the parent's 'tools' event still fired");
+  is($emitted[0]{count}, 10, 'with the full tool list');
+  is($emitted[0]{context}, $context, 'and the request context passed through');
 };
 
 subtest 'namespace auto-fill works in tools' => sub {

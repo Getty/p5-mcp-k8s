@@ -676,6 +676,32 @@ sub _update_tool_descriptions {
   $self->_descriptions_updated(1);
 }
 
+sub _tools {
+  my ($self, $context) = @_;
+
+=method _tools
+
+Override of L<MCP::Server/_tools>. Enriches the tool descriptions with the
+discovered RBAC permissions before handing the list to the caller, then
+defers to the parent implementation.
+
+C<_tools> is the single funnel every transport passes through for
+C<tools/list> (and C<tools/call>), so this is the one place that covers
+stdio, the inherited HTTP transport, and an embedded server driven through
+L<Net::Async::MCP> alike. Hooking anywhere else — as C<run_stdio> alone
+used to — leaves every other path serving the static descriptions, and the
+descriptions are what tell the LLM which resources exist per namespace.
+
+Discovery stays lazy: the first C<< ->api >> access happens here, on the first
+request, not in C<BUILD>. C<_update_tool_descriptions> is idempotent via
+its own guard, so the per-request cost after the first one is a boolean.
+
+=cut
+
+  $self->_update_tool_descriptions;
+  return $self->SUPER::_tools($context);
+}
+
 =head1 MCP TOOLS
 
 All tools are registered on the L</server> during construction. Each tool
@@ -1522,9 +1548,16 @@ Start the MCP server on stdio. If called as a class method, creates a
 new instance first. This is the main entry point used by the C<mcp-k8s>
 script.
 
+Discovery is run here, before the transport starts. L</_tools> would do it
+on the first C<tools/list> anyway, so this is not what makes the
+descriptions correct — it is what makes an unreachable cluster fail at
+process start, on stderr, instead of turning into a JSON-RPC internal error
+once a client is already attached.
+
 =cut
 
   $self = $self->new unless ref $self;
+  # Not redundant with the _tools override: fails fast before to_stdio.
   $self->_update_tool_descriptions;
   $self->to_stdio;
 }
