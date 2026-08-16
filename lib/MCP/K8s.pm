@@ -379,7 +379,9 @@ lookup:
 
 =item 1. Static C<%RESOURCE_PLURALS> map (fast, zero-cost)
 
-=item 2. C<IO::K8s> class C<resource_plural()> method (supports CRDs like Cilium)
+=item 2. C<resource_plural()> on the L<IO::K8s> class the Kind resolves to —
+only for classes that bring their own, and only when asking costs no cluster
+roundtrip (see below)
 
 =item 3. API server discovery cache (lazy, one-time query)
 
@@ -387,16 +389,44 @@ lookup:
 
 =back
 
+B<Tier 2 is narrower than it reads.> C<IO::K8s::Role::APIObject> defines
+C<resource_plural()> as C<undef>, and not one class shipped with L<IO::K8s>
+1.107 overrides it — for every built-in Kind this tier answers nothing and
+the lookup falls through to tier 3. It earns its place only for a CRD
+provider's own class, registered in the client's C<resource_map>, that
+overrides C<resource_plural()> itself.
+
+It is also skipped whenever answering would cost a cluster roundtrip.
+C<expand_class> resolves through L<Kubernetes::REST>'s C<resource_map>, and
+with C<resource_map_from_cluster> — the 1.107 default — building that map is
+a full C<GET /openapi/v2>: megabytes, for an answer the shipped classes give
+as C<undef> anyway. A client built with C<< resource_map_from_cluster => 0 >>,
+and any object that does not have the attribute at all, still goes through
+tier 2, so a locally registered CRD class keeps working.
+
+Which leaves CRD support resting on tier 3 in practice: it asks C</api/v1>
+and C</apis> and gets back the plurals the API server itself uses.
+
 =cut
 
   # Tier 1: Static map (fast path)
   return $RESOURCE_PLURALS{$resource} if $RESOURCE_PLURALS{$resource};
 
   # Tier 2: IO::K8s class method (CRD classes like IO::K8s::...)
-  my $class = eval { $self->api->expand_class($resource) };
-  if ($class && $class->can('resource_plural')) {
-    my $plural = eval { $class->resource_plural };
-    return $plural if defined $plural && length $plural;
+  # Guarded: expand_class resolves through the client's lazy resource_map, and
+  # with resource_map_from_cluster (Kubernetes::REST 1.107 default) that map is
+  # fetched with GET /openapi/v2 — the whole OpenAPI spec, for a result the
+  # shipped IO::K8s classes all answer with undef. Tier 3 handles those kinds.
+  # Revisit once kubernetes-rest #15 makes expand_class fetch-free.
+  my $api = $self->api;
+  my $map_from_cluster = $api->can('resource_map_from_cluster')
+    && $api->resource_map_from_cluster;
+  unless ($map_from_cluster) {
+    my $class = eval { $api->expand_class($resource) };
+    if ($class && $class->can('resource_plural')) {
+      my $plural = eval { $class->resource_plural };
+      return $plural if defined $plural && length $plural;
+    }
   }
 
   # Tier 3: API server discovery (cached)

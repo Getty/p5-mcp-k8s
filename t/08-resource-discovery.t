@@ -86,6 +86,38 @@ use MCP::K8s;
   }
 }
 
+# A client whose resource map still has to come from the cluster. In
+# Kubernetes::REST 1.107 reaching expand_class here costs a full
+# GET /openapi/v2, so plural tier 2 must not touch it.
+{
+  package MockClusterMapAPI;
+  our @ISA = ('MockDiscoveryAPI');
+  sub resource_map_from_cluster { 1 }
+  sub expand_class {
+    my ($self) = @_;
+    $self->{expand_calls}++;
+    return undef;
+  }
+}
+
+# A client with a local resource map: expand_class is free here, so tier 2
+# stays available for hand-registered CRD classes.
+{
+  package MockLocalMapAPI;
+  our @ISA = ('MockDiscoveryAPI');
+  sub resource_map_from_cluster { 0 }
+  sub expand_class {
+    my ($self, $kind) = @_;
+    $self->{expand_calls}++;
+    return $kind eq 'StaticWebsite' ? 'MockCRDClass' : undef;
+  }
+}
+
+{
+  package MockCRDClass;
+  sub resource_plural { 'staticwebsites' }
+}
+
 {
   package MockHTTPResp;
   sub new {
@@ -236,6 +268,42 @@ subtest 'discovery called only once (cached)' => sub {
 
   my $call_count_after = scalar @{ $api->{calls} };
   is($call_count_after, $call_count_before, 'no additional API calls after cache populated');
+};
+
+subtest 'tier 2 never triggers a resource map fetch' => sub {
+  my $fetching_api = MockClusterMapAPI->new;
+  my $fetching_k8s = MCP::K8s->new(
+    api        => $fetching_api,
+    namespaces => ['test-ns'],
+  );
+
+  is($fetching_k8s->_resource_plural('Pod'), 'pods',
+    'static map unchanged');
+  is($fetching_k8s->_resource_plural('CustomWidget'), 'customwidgets',
+    'API discovery unchanged');
+  is($fetching_k8s->_resource_plural('CiliumNetworkPolicy'), 'ciliumnetworkpolicies',
+    'CRD via API discovery unchanged');
+  is($fetching_k8s->_resource_plural('ZzzzUnknownThing'), 'zzzzunknownthings',
+    'heuristic fallback unchanged');
+
+  is($fetching_api->{expand_calls}, undef,
+    'expand_class never called - no GET /openapi/v2 for a plural');
+};
+
+subtest 'tier 2 still answers when expand_class is free' => sub {
+  my $local_api = MockLocalMapAPI->new;
+  my $local_k8s = MCP::K8s->new(
+    api        => $local_api,
+    namespaces => ['test-ns'],
+  );
+
+  # StaticWebsite is in neither the static map nor the discovery endpoints,
+  # so only the registered IO::K8s class can supply this plural.
+  is($local_k8s->_resource_plural('StaticWebsite'), 'staticwebsites',
+    'registered CRD class resource_plural() wins');
+  ok($local_api->{expand_calls}, 'expand_class was consulted');
+  is(scalar @{ $local_api->{calls} }, 0,
+    'tier 2 answered before any discovery request');
 };
 
 done_testing;
