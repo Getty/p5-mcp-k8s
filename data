@@ -1,0 +1,14 @@
+---
+class: standard
+completed: 2026-08-16T02:06:06Z
+created: 2026-08-15T21:09:42Z
+id: 2
+priority: medium
+started: 2026-08-16T02:06:06Z
+status: done
+tags:
+- release
+- docs
+title: Bump Changes to 0.003 and release
+updated: 2026-08-16T02:06:06Z
+---
