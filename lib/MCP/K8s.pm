@@ -453,7 +453,7 @@ sub _discover_resource_plurals {
 
 Query the API server's discovery endpoints (C</api/v1> and C</apis>) to
 build a Kind-to-plural mapping. Results are cached in
-L</_resource_plurals_cache>. Failures are silently ignored — the cache
+C<_resource_plurals_cache>. Failures are silently ignored — the cache
 simply remains empty and callers fall through to heuristic pluralization.
 
 =cut
