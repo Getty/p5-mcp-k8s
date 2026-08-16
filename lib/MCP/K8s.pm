@@ -523,6 +523,38 @@ auto-fills it. Returns C<undef> if the namespace cannot be determined
   return undef;
 }
 
+sub _is_conflict_error {
+  my ($self, $err) = @_;
+
+=method _is_conflict_error
+
+  if ($self->_is_conflict_error("$@")) { ... }
+
+Decide whether a failed C<create> failed because the resource already
+exists (HTTP 409 / C<AlreadyExists>), which is the signal for
+L</k8s_apply> to fall back to a patch.
+
+This is a string match, deliberately. L<Kubernetes::REST> 1.107 does not
+raise a typed exception for API errors: C<create> runs the response
+through C<_check_response>, which C<croak>s with
+
+  Kubernetes API error (create <class>): <status> <body>
+
+C<Kubernetes::REST::Error> and C<Kubernetes::REST::RemoteError> still
+exist, but only as compatibility helpers for the deprecated v0 API — no
+code path in 1.107 throws them, so there is no C<< ->code >> to check.
+The match stays wide (status code B<or> C<reason>) so that it survives a
+reworded error as long as either token is still in it; narrowing it to
+the exact croak format above would trade one fragility for a worse one.
+
+Revisit when the client grows typed errors.
+
+=cut
+
+  return 0 unless defined $err;
+  return $err =~ /409|AlreadyExists/i ? 1 : 0;
+}
+
 sub _format_resource_summary {
   my ($self, $obj) = @_;
 
@@ -1403,7 +1435,7 @@ sub _register_tools {
 
         # If 409 Conflict / AlreadyExists, fall through to patch
         my $err = "$@";
-        unless ($err =~ /409|AlreadyExists/i) {
+        unless ($self->_is_conflict_error($err)) {
           return "Failed to create $resource: $err";
         }
       }

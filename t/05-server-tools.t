@@ -27,10 +27,27 @@ use JSON::MaybeXS;
     );
   }
 
+  # Failure strings mirror Kubernetes::REST 1.107: the v1 API has no typed
+  # exceptions, _check_response croaks
+  #   "Kubernetes API error (<context>): <status> <body>"
+  # and that string is all k8s_apply's conflict detection ever gets to see.
+  our $CONFLICT_ERROR =
+      'Kubernetes API error (create IO::K8s::Api::Core::V1::ConfigMap): 409 '
+    . '{"kind":"Status","status":"Failure","reason":"AlreadyExists",'
+    . '"message":"configmaps \"existing-config\" already exists","code":409}'
+    . " at lib/Kubernetes/REST.pm line 437.\n";
+
+  our $FORBIDDEN_ERROR =
+      'Kubernetes API error (create IO::K8s::Api::Core::V1::ConfigMap): 403 '
+    . '{"kind":"Status","status":"Failure","reason":"Forbidden",'
+    . '"message":"configmaps is forbidden","code":403}'
+    . " at lib/Kubernetes/REST.pm line 437.\n";
+
   sub create {
     my ($self, $obj) = @_;
-    if ($self->{force_409} && $obj->can('kind') && $obj->kind ne 'SelfSubjectRulesReview') {
-      die "409 Conflict: AlreadyExists\n";
+    if ($obj->can('kind') && $obj->kind ne 'SelfSubjectRulesReview') {
+      die $self->{force_create_error} if $self->{force_create_error};
+      die $CONFLICT_ERROR             if $self->{force_409};
     }
     return $obj;
   }
@@ -537,6 +554,40 @@ subtest 'k8s_apply falls back to patch on 409' => sub {
 
   # Disable 409 simulation
   $api->{force_409} = 0;
+};
+
+subtest 'k8s_apply reports non-conflict create errors' => sub {
+  # A create that fails for any other reason must NOT be patched over:
+  # the fallback is for "already exists", not for "cannot create".
+  $api->{force_create_error} = $MockK8sAPI::FORBIDDEN_ERROR;
+
+  my $tool = find_tool($k8s->server, 'k8s_apply');
+  my $result = $tool->code->($tool, {
+    resource  => 'ConfigMap',
+    namespace => 'test-ns',
+    manifest  => {
+      metadata => { name => 'forbidden-config' },
+      data     => { key => 'value' },
+    },
+  });
+  like($result, qr/^Failed to create ConfigMap/, 'non-409 create error is reported');
+  unlike($result, qr/"status"\s*:\s*"updated"/, 'no silent patch fallback on 403');
+
+  $api->{force_create_error} = undef;
+};
+
+subtest '_is_conflict_error recognises the real client error' => sub {
+  ok($k8s->_is_conflict_error($MockK8sAPI::CONFLICT_ERROR),
+    'Kubernetes::REST 1.107 409 croak is a conflict');
+  ok($k8s->_is_conflict_error('Kubernetes API error (create Pod): 409 {}'),
+    'status code alone is enough');
+  ok($k8s->_is_conflict_error('the object AlreadyExists'),
+    'reason alone is enough');
+  ok(!$k8s->_is_conflict_error($MockK8sAPI::FORBIDDEN_ERROR),
+    '403 croak is not a conflict');
+  ok(!$k8s->_is_conflict_error("Connection refused\n"),
+    'transport failure is not a conflict');
+  ok(!$k8s->_is_conflict_error(undef), 'undef is not a conflict');
 };
 
 subtest 'k8s_apply requires metadata.name' => sub {
