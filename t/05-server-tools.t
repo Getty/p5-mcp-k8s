@@ -74,30 +74,45 @@ use JSON::MaybeXS;
     return 1;
   }
 
+  # patch() and patch_status() hit different endpoints - the whole point of
+  # the subresource parameter - so record which one the tool actually called.
   sub patch {
     my ($self, $kind, $name, %args) = @_;
+    $self->_record_patch('patch', $kind, $name, %args);
     return MockK8sObject->new(
       kind     => $kind,
       metadata => { name => $name, namespace => $args{namespace} },
     );
   }
 
+  sub patch_status {
+    my ($self, $kind, $name, %args) = @_;
+    $self->_record_patch('patch_status', $kind, $name, %args);
+    return MockK8sObject->new(
+      kind     => $kind,
+      metadata => { name => $name, namespace => $args{namespace} },
+    );
+  }
+
+  sub _record_patch {
+    my ($self, $method, $kind, $name, %args) = @_;
+    $self->{patch_calls} ||= [];
+    push @{ $self->{patch_calls} },
+      { method => $method, kind => $kind, name => $name, %args };
+  }
+
   sub expand_class { 'IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview' }
 
-  sub _request {
-    my ($self, $method, $path, $body, %opts) = @_;
-    return MockHTTPResponse->new(200, "fake log line 1\nfake log line 2\n");
+  # Kubernetes::REST::log() returns the log body and croaks on API errors.
+  # Records the call so tests can check what k8s_logs asked for.
+  sub log {
+    my ($self, $kind, %args) = @_;
+    $self->{log_calls} ||= [];
+    push @{ $self->{log_calls} }, { kind => $kind, %args };
+    die $self->{force_log_error} if $self->{force_log_error};
+    return $self->{log_output} if exists $self->{log_output};
+    return "fake log line 1\nfake log line 2\n";
   }
-}
-
-{
-  package MockHTTPResponse;
-  sub new {
-    my ($class, $status, $content) = @_;
-    bless { status => $status, content => $content }, $class;
-  }
-  sub status  { $_[0]->{status} }
-  sub content { $_[0]->{content} }
 }
 
 {
@@ -128,6 +143,15 @@ use JSON::MaybeXS;
       @rules = (
         MockSSRRRule->new(['get', 'list'], ['pods']),
       );
+    } elsif ($namespace eq 'status-ns') {
+      # A controller Role: reads deployments, writes only their status.
+      @rules = (
+        MockSSRRRule->new(['get', 'list'], ['deployments']),
+        MockSSRRRule->new(['patch'], ['deployments/status']),
+      );
+    } elsif ($namespace eq 'admin-ns') {
+      # Wildcard role: in Kubernetes resources: ["*"] covers subresources too.
+      @rules = (MockSSRRRule->new(['*'], ['*']));
     } elsif ($namespace eq '') {
       @rules = (MockSSRRRule->new(['list'], ['namespaces']));
     }
@@ -371,6 +395,8 @@ subtest 'k8s_create permission denied' => sub {
 };
 
 subtest 'k8s_patch tool works' => sub {
+  $api->{patch_calls} = [];
+
   my $tool = find_tool($k8s->server, 'k8s_patch');
   my $result = $tool->code->($tool, {
     resource  => 'Deployment',
@@ -381,6 +407,137 @@ subtest 'k8s_patch tool works' => sub {
   my $data = JSON::MaybeXS->new->decode($result);
   is($data->{status}, 'patched', 'patch returns patched status');
   is($data->{name}, 'my-deploy', 'patch returns correct name');
+  ok(!exists $data->{subresource}, 'no subresource reported for a main-endpoint patch');
+
+  my $call = $api->{patch_calls}[0];
+  is($call->{method}, 'patch', 'main endpoint uses patch()');
+  is($call->{type}, 'strategic', 'main endpoint keeps the strategic default');
+};
+
+subtest 'k8s_patch status goes to patch_status' => sub {
+  # The point of the subresource parameter: patch() on the main endpoint has
+  # its status stanza stripped by the API server and still answers 2xx, so a
+  # status write that lands on patch() is silent data loss.
+  $api->{patch_calls} = [];
+
+  my $admin_k8s = MCP::K8s->new(
+    api        => $api,
+    namespaces => ['admin-ns'],
+  );
+  my $tool = find_tool($admin_k8s->server, 'k8s_patch');
+  my $result = $tool->code->($tool, {
+    resource    => 'Deployment',
+    name        => 'my-deploy',
+    namespace   => 'admin-ns',
+    patch       => { status => { availableReplicas => 3 } },
+    subresource => 'status',
+  });
+
+  my $data = JSON::MaybeXS->new->decode($result);
+  is($data->{status}, 'patched', 'status patch reports success');
+  is($data->{subresource}, 'status', 'result names the subresource it wrote');
+
+  my $call = $api->{patch_calls}[0];
+  is(scalar @{ $api->{patch_calls} }, 1, 'exactly one API call');
+  is($call->{method}, 'patch_status', 'status write uses patch_status(), not patch()');
+  is($call->{name}, 'my-deploy', 'name passed through');
+  is($call->{namespace}, 'admin-ns', 'namespace passed through');
+  is($call->{type}, 'merge',
+    'status write defaults to merge - custom resources 415 on strategic');
+};
+
+subtest 'k8s_patch status honours an explicit patch_type' => sub {
+  $api->{patch_calls} = [];
+
+  my $admin_k8s = MCP::K8s->new(
+    api        => $api,
+    namespaces => ['admin-ns'],
+  );
+  my $tool = find_tool($admin_k8s->server, 'k8s_patch');
+  $tool->code->($tool, {
+    resource    => 'Deployment',
+    name        => 'my-deploy',
+    namespace   => 'admin-ns',
+    patch       => { status => { availableReplicas => 3 } },
+    subresource => 'status',
+    patch_type  => 'strategic',
+  });
+
+  is($api->{patch_calls}[0]{type}, 'strategic', 'explicit patch_type wins over the merge default');
+};
+
+subtest 'k8s_patch status is gated on the status subresource' => sub {
+  # test-ns grants patch on deployments but not on deployments/status, and in
+  # Kubernetes the second does not follow from the first.
+  $api->{patch_calls} = [];
+
+  my $tool = find_tool($k8s->server, 'k8s_patch');
+  my $result = $tool->code->($tool, {
+    resource    => 'Deployment',
+    name        => 'my-deploy',
+    namespace   => 'test-ns',
+    patch       => { status => { availableReplicas => 3 } },
+    subresource => 'status',
+  });
+
+  like($result, qr/^Permission denied: cannot patch Deployment status in namespace test-ns/,
+    'patch on the resource does not grant patch on its status');
+  is(scalar @{ $api->{patch_calls} }, 0, 'API never touched after a denial');
+};
+
+subtest 'k8s_patch status works with a narrow status Role' => sub {
+  # End to end on the real-world Role: patch on deployments/status only, no
+  # wildcard, no main-endpoint patch. This is the case the discovery filter
+  # used to deny outright.
+  $api->{patch_calls} = [];
+
+  my $status_k8s = MCP::K8s->new(
+    api        => $api,
+    namespaces => ['status-ns'],
+  );
+  my $tool = find_tool($status_k8s->server, 'k8s_patch');
+
+  my $result = $tool->code->($tool, {
+    resource    => 'Deployment',
+    name        => 'my-deploy',
+    namespace   => 'status-ns',
+    patch       => { status => { availableReplicas => 3 } },
+    subresource => 'status',
+  });
+  unlike($result, qr/^Permission denied/,
+    'narrow status Role is not denied');
+  my $data = eval { JSON::MaybeXS->new->decode($result) } || {};
+  is($data->{status}, 'patched', 'narrow status Role may write status');
+  is(($api->{patch_calls}[0] || {})->{method}, 'patch_status',
+    'and it lands on patch_status');
+
+  # ... and the same Role still cannot touch the main endpoint.
+  $api->{patch_calls} = [];
+  my $denied = $tool->code->($tool, {
+    resource  => 'Deployment',
+    name      => 'my-deploy',
+    namespace => 'status-ns',
+    patch     => { spec => { replicas => 5 } },
+  });
+  like($denied, qr/^Permission denied: cannot patch Deployment in namespace status-ns/,
+    'status permission does not leak into the main endpoint');
+  is(scalar @{ $api->{patch_calls} }, 0, 'API never touched after that denial');
+};
+
+subtest 'k8s_patch rejects unknown subresources' => sub {
+  $api->{patch_calls} = [];
+
+  my $tool = find_tool($k8s->server, 'k8s_patch');
+  my $result = $tool->code->($tool, {
+    resource    => 'Deployment',
+    name        => 'my-deploy',
+    namespace   => 'test-ns',
+    patch       => { spec => { replicas => 3 } },
+    subresource => 'scale',
+  });
+
+  like($result, qr/Unsupported subresource 'scale'/, 'unknown subresource refused readably');
+  is(scalar @{ $api->{patch_calls} }, 0, 'API never touched for an unsupported subresource');
 };
 
 subtest 'k8s_delete tool works' => sub {
@@ -406,12 +563,68 @@ subtest 'k8s_delete permission denied' => sub {
 };
 
 subtest 'k8s_logs tool works' => sub {
+  $api->{log_calls} = [];
+
   my $tool = find_tool($k8s->server, 'k8s_logs');
   my $result = $tool->code->($tool, {
     name      => 'my-pod',
     namespace => 'test-ns',
   });
   like($result, qr/fake log line/, 'logs returns log content');
+
+  my $call = $api->{log_calls}[0];
+  is($call->{kind}, 'Pod', 'logs asks the client for the Pod log subresource');
+  is($call->{name}, 'my-pod', 'pod name passed through');
+  is($call->{namespace}, 'test-ns', 'namespace passed through');
+  is($call->{tailLines}, 100, 'default tail_lines passed as tailLines');
+  ok(!exists $call->{container}, 'no container key without a container');
+  ok(!exists $call->{previous}, 'no previous key unless requested');
+};
+
+subtest 'k8s_logs passes container and previous through' => sub {
+  $api->{log_calls} = [];
+
+  my $tool = find_tool($k8s->server, 'k8s_logs');
+  $tool->code->($tool, {
+    name       => 'my-pod',
+    namespace  => 'test-ns',
+    container  => 'sidecar',
+    tail_lines => 5,
+    previous   => 1,
+  });
+
+  my $call = $api->{log_calls}[0];
+  is($call->{container}, 'sidecar', 'container passed through');
+  is($call->{tailLines}, 5, 'tail_lines passed as tailLines');
+  ok($call->{previous}, 'previous passed through');
+};
+
+subtest 'k8s_logs on empty output' => sub {
+  local $api->{log_output} = '';
+
+  my $tool = find_tool($k8s->server, 'k8s_logs');
+  my $result = $tool->code->($tool, {
+    name      => 'quiet-pod',
+    namespace => 'test-ns',
+  });
+  is($result, '(no log output)', 'empty log body reported as (no log output)');
+};
+
+subtest 'k8s_logs reports API errors' => sub {
+  # log() croaks on any API error - 404, 403, transport failure alike.
+  local $api->{force_log_error} =
+      'Kubernetes API error (log Pod): 404 '
+    . '{"kind":"Status","reason":"NotFound","code":404}'
+    . " at lib/Kubernetes/REST.pm line 437.\n";
+
+  my $tool = find_tool($k8s->server, 'k8s_logs');
+  my $result = $tool->code->($tool, {
+    name      => 'gone-pod',
+    namespace => 'test-ns',
+  });
+  like($result, qr{^Failed to get logs for pod/gone-pod: }, 'error names the pod');
+  like($result, qr/404/, 'error keeps the status code');
+  like($result, qr/NotFound/, 'error keeps the API reason');
 };
 
 subtest 'k8s_logs requires namespace' => sub {

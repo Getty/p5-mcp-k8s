@@ -766,9 +766,23 @@ B<Parameters:>
 
 =item C<patch_type> (string) — Strategy: C<strategic> (default), C<merge>, or C<json>
 
+=item C<subresource> (string) — C<status> to write the status subresource
+
 =back
 
 See L<Kubernetes::REST/patch> for details on patch strategies.
+
+B<Status writes need C<< subresource => 'status' >>.> Once a resource has a
+status subresource — every CRD declaring one, plus the built-ins that always
+had one — the API server strips C<status> from any write to the main endpoint
+and still answers 2xx. Without this parameter the patch reports success and
+stores nothing. With it, the call goes to L<Kubernetes::REST/patch_status>,
+which addresses C</status>, and the patch type defaults to C<merge> rather
+than C<strategic>, because custom resources answer a strategic merge patch
+with 415. An explicit C<patch_type> still wins.
+
+The status subresource is a separate resource in RBAC as well: this path
+requires C<patch> on C<< <plural>/status >>, not on C<< <plural> >>.
 
 =head2 k8s_delete
 
@@ -788,8 +802,8 @@ B<Parameters:>
 
 =head2 k8s_logs
 
-Get container logs from a pod. Essential for debugging. Uses the raw
-C</api/v1/namespaces/{ns}/pods/{name}/log> endpoint.
+Get container logs from a pod. Essential for debugging. Reads the pod's
+C<log> subresource through L<Kubernetes::REST>'s C<log()>.
 
 B<Parameters:>
 
@@ -1086,8 +1100,15 @@ sub _register_tools {
         },
         patch_type => {
           type        => 'string',
-          description => 'Patch strategy: strategic (default), merge, json',
+          description => 'Patch strategy: strategic (default, merge for status), merge, json',
           enum        => ['strategic', 'merge', 'json'],
+        },
+        subresource => {
+          type        => 'string',
+          description => 'Write to a subresource instead of the main endpoint. '
+            . 'Use "status" for status fields: the API server strips status '
+            . 'from writes to the main endpoint and still answers 2xx.',
+          enum        => ['status'],
         },
       },
       required => ['resource', 'name', 'patch'],
@@ -1095,16 +1116,34 @@ sub _register_tools {
     code => sub {
       my ($tool, $args) = @_;
 
-      my $resource   = $args->{resource};
-      my $name       = $args->{name};
-      my $ns         = $self->_resolve_namespace($args);
-      my $patch      = $args->{patch};
-      my $patch_type = $args->{patch_type} // 'strategic';
-      my $plural     = $self->_resource_plural($resource);
+      my $resource    = $args->{resource};
+      my $name        = $args->{name};
+      my $ns          = $self->_resolve_namespace($args);
+      my $patch       = $args->{patch};
+      my $subresource = $args->{subresource};
+      my $plural      = $self->_resource_plural($resource);
 
-      unless ($self->permissions->can_do('patch', $plural, $ns // '')) {
-        return "Permission denied: cannot patch $resource" . ($ns ? " in namespace $ns" : "");
+      if (defined $subresource && $subresource ne 'status') {
+        return "Unsupported subresource '$subresource': only 'status' is supported";
       }
+      my $to_status = defined $subresource && $subresource eq 'status';
+
+      # The status subresource is its own RBAC resource: patch on <plural>
+      # does not grant patch on <plural>/status. The plural cache cannot help
+      # here — _discover_resource_plurals skips names containing '/' — so the
+      # subresource is appended to the base plural.
+      my $rbac_resource = $to_status ? "$plural/status" : $plural;
+
+      unless ($self->permissions->can_do('patch', $rbac_resource, $ns // '')) {
+        return "Permission denied: cannot patch "
+          . ($to_status ? "$resource status" : $resource)
+          . ($ns ? " in namespace $ns" : "");
+      }
+
+      # Status writes default to a merge patch: custom resources answer 415 to
+      # a strategic merge patch. An explicit patch_type still wins.
+      my $patch_type = $args->{patch_type}
+        // ($to_status ? 'merge' : 'strategic');
 
       my %api_args = (
         patch => $patch,
@@ -1112,13 +1151,17 @@ sub _register_tools {
       );
       $api_args{namespace} = $ns if defined $ns;
 
-      my $patched = eval { $self->api->patch($resource, $name, %api_args) };
+      # patch() writes the main endpoint, which silently drops a status stanza
+      # for every resource that has a status subresource.
+      my $method  = $to_status ? 'patch_status' : 'patch';
+      my $patched = eval { $self->api->$method($resource, $name, %api_args) };
       return "Failed to patch $resource/$name: $@" if $@;
 
       return $self->_to_json({
         status => 'patched',
         kind   => $resource,
         name   => $name,
+        ($to_status ? (subresource => 'status') : ()),
         ($ns ? (namespace => $ns) : ()),
       });
     },
@@ -1222,22 +1265,19 @@ sub _register_tools {
         return "Permission denied: cannot read pod logs in namespace $ns";
       }
 
-      # Build the log URL path directly
-      my $path = "/api/v1/namespaces/$ns/pods/$name/log";
-      my %params;
-      $params{tailLines} = $tail_lines if $tail_lines;
-      $params{container} = $container if $container;
-      $params{previous}  = 'true' if $previous;
+      # Kubernetes::REST's log() builds /api/v1/namespaces/$ns/pods/$name/log
+      # and the query parameters itself. It raises API errors (404, 403, ...)
+      # instead of handing back the response, so the status check lives in the
+      # eval now.
+      my %log_args = (name => $name, namespace => $ns);
+      $log_args{tailLines} = $tail_lines if $tail_lines;
+      $log_args{container} = $container  if $container;
+      $log_args{previous}  = 1           if $previous;
 
-      my $response = eval { $self->api->_request('GET', $path, undef, parameters => \%params) };
+      my $content = eval { $self->api->log('Pod', %log_args) };
       return "Failed to get logs for pod/$name: $@" if $@;
 
-      if ($response->status >= 400) {
-        return "Error getting logs: " . $response->status . " " . ($response->content // '');
-      }
-
-      my $content = $response->content // '';
-      return $content || "(no log output)";
+      return ($content // '') || "(no log output)";
     },
   ), 'Get pod logs. Available in namespaces: ', '_logs'];
 
