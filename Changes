@@ -1,4 +1,47 @@
 {{$NEXT}}
+  - k8s_patch takes an optional subresource parameter. With
+    subresource => 'status' the call goes to Kubernetes::REST's
+    patch_status() and the patch type defaults to merge instead of
+    strategic, because custom resources answer a strategic merge patch
+    with 415; an explicit patch_type still wins. Without it, a status
+    write was silently lost: the API server strips status from any write
+    to the main endpoint of a resource that has a status subresource and
+    answers 2xx anyway, so the tool reported success and stored nothing.
+    RBAC is checked on <plural>/status, not <plural> — a patch grant on
+    the main endpoint does not hand out status writes. Tool count is
+    unchanged at 10.
+  - Fix RBAC discovery dropping subresources. _discover_namespace kept
+    only pods/log and threw away every other subresource before it
+    reached the rules map, so a correctly narrow Role granting e.g.
+    patch on deployments/status was denied — a permission denial that
+    was not one. Subresources are now stored as the API server reports
+    them; they cannot collide with a base plural, which never contains
+    a '/'. allowed_resources still filters them, so tool descriptions
+    are byte-identical. Note the follow-on: a namespace whose only
+    grants are subresources now appears in allowed_namespaces, which
+    can stop _resolve_namespace from auto-filling when that makes more
+    than one namespace reachable.
+  - k8s_logs reads the pod's log subresource through Kubernetes::REST's
+    public log() instead of hand-building the URL and calling the
+    private _request(). One consequence: an HTTP error is now raised by
+    the client, so a 404 arrives as "Failed to get logs for pod/<name>:
+    ... 404 ..." rather than "Error getting logs: 404 ...". Status code
+    and API reason are still in the message.
+  - Plural lookup tier 2 no longer triggers a full /openapi/v2 download.
+    expand_class() resolves through Kubernetes::REST's lazy resource_map,
+    which defaults to loading from the cluster, so a single lookup pulled
+    the whole OpenAPI spec — and then returned undef anyway, because no
+    class shipped with IO::K8s 1.107 defines resource_plural(). The tier
+    is skipped when the client would have to fetch, and still runs for a
+    CRD provider class registered in a local resource map. Same plurals,
+    fewer requests.
+  - Move k8s_apply's create-conflict detection into _is_conflict_error
+    and document why it stays a regex: Kubernetes::REST 1.107 croaks a
+    plain string and carries typed errors only in its deprecated v0
+    modules, so there is nothing structured to test. Narrowing the match
+    to the current croak format would turn any upstream rewording into a
+    false negative. Added regression tests, including one that a 403 on
+    create is not mistaken for a conflict.
   - Fix Moo predicate traps in _build_api: env-only MCP_K8S_TOKEN,
     MCP_K8S_SERVER and MCP_K8S_CONTEXT are now honoured at all three
     auth tiers. The has_token / has_server_endpoint / has_context_name
