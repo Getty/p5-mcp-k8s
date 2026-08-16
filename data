@@ -1,0 +1,36 @@
+---
+class: standard
+completed: 2026-08-16T01:54:13Z
+created: 2026-08-16T01:44:44Z
+id: 13
+priority: high
+started: 2026-08-16T01:54:13Z
+status: done
+tags:
+- bug
+title: k8s_get output=yaml emits invalid YAML for every boolean field
+updated: 2026-08-16T01:54:13Z
+---
+
+k8s_get with output => 'yaml' runs YAML::XS::Dump($obj->TO_JSON). TO_JSON returns JSON::PP::Boolean objects for every boolean field, and YAML::XS has no idea what those are, so it serialises the Perl guts:
+
+    spec:
+      containers:
+      - securityContext:
+          privileged: !!perl/scalar:JSON::PP::Boolean 0
+          readOnlyRootFilesystem: !!perl/scalar:JSON::PP::Boolean 1
+      hostNetwork: !!perl/scalar:JSON::PP::Boolean 1
+
+Measured on a real IO::K8s Pod object, not a hand-rolled struct. Kubernetes resources are full of booleans (hostNetwork, privileged, readOnly, automountServiceAccountToken, allowPrivilegeEscalation, ...), so this hits routinely rather than in a corner case.
+
+Two consequences: the output is not a valid manifest — kubectl apply rejects it — and the LLM is shown Perl internals where it expects YAML, which is exactly the kind of thing that makes a model invent a workaround.
+
+Fix: IO::K8s already ships the correct serialiser. Role::APIObject::to_yaml does
+
+    YAML::PP->new(schema => [qw/JSON/], boolean => 'JSON::PP')->dump_string($self->TO_JSON)
+
+which produces 'hostNetwork: true'. So k8s_get should call $obj->to_yaml instead of dumping TO_JSON itself.
+
+This also settles the YAML::XS question: YAML::PP is a hard requires of IO::K8s (cpanfile line 6), so it is always present wherever MCP::K8s runs. The eval { require YAML::XS } guard and its silent JSON fallback can go entirely — no optional dependency, no 'recommends' entry needed, and no more silently degrading to JSON when the user asked for YAML.
+
+Check while doing it: to_yaml lives in IO::K8s::Role::APIObject, so confirm the objects k8s_get holds actually compose that role (they should — it is the API object role) and decide what happens if one does not.
