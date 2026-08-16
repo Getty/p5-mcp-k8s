@@ -1,0 +1,20 @@
+---
+class: standard
+created: 2026-08-16T17:26:34Z
+id: 15
+priority: medium
+status: backlog
+tags:
+- rbac
+- config
+title: kubeconfig_path laesst sich nicht durchreichen
+updated: 2026-08-16T17:26:34Z
+---
+
+MCP::K8s->new nimmt context_name, aber keinen Pfad zur kubeconfig. _build_api baut daraus Kubernetes::REST::Kubeconfig->new(context_name => ...) ohne Pfad, das Objekt faellt also auf $ENV{KUBECONFIG} bzw. ~/.kube/config zurueck — obwohl Kubernetes::REST::Kubeconfig ein kubeconfig_path-Attribut haette.
+
+Wirkung beim Aufrufer: wer seine kubeconfigs nicht am Standardort haelt (CitiAI legt sie unter CITIAI_KUBECONFIG in einem Verzeichnis je Cluster ab), kann MCP::K8s nicht sagen, welche Datei gilt. Existiert im Standard-kubeconfig ein GLEICHNAMIGER Context, der woanders hinzeigt, arbeitet die KI still gegen den falschen Cluster — bei k8s_delete ist das teuer.
+
+Gewuenscht: ein kubeconfig_path-Attribut auf MCP::K8s, das an Kubernetes::REST::Kubeconfig durchgereicht wird.
+
+Behelf beim Aufrufer heute: local $ENV{KUBECONFIG} um den Konstruktoraufruf. Gefunden beim Bau von CitiAI::Queen (Repo citilan/citiai).
