@@ -42,6 +42,9 @@ use MCP::K8s::Permissions;
     my @rules;
     if ($namespace eq 'only-ns' || $namespace eq 'first' || $namespace eq 'second') {
       @rules = (MockRule3->new(['get', 'list'], ['pods']));
+    } elsif ($namespace eq 'status-only') {
+      # A controller Role: no main endpoint at all, only the subresource.
+      @rules = (MockRule3->new(['patch'], ['deployments/status']));
     } elsif ($namespace eq '') {
       @rules = (MockRule3->new(['list'], ['namespaces']));
     }
@@ -101,6 +104,32 @@ subtest 'multiple namespaces return undef' => sub {
 
   my $ns = $k8s->_resolve_namespace({});
   is($ns, undef, 'undef when multiple namespaces and none specified');
+};
+
+subtest 'namespace reachable only through a subresource auto-fills' => sub {
+  # Since discovery keeps subresource entries, a Role granting nothing but
+  # deployments/status still puts its namespace in the map - and being the
+  # only one, it auto-fills.
+  my $k8s = make_k8s_with_namespaces('status-only');
+
+  is_deeply([$k8s->permissions->allowed_namespaces], ['status-only'],
+    'subresource-only namespace counts as reachable');
+  is($k8s->_resolve_namespace({}), 'status-only',
+    'and auto-fills as the single reachable namespace');
+};
+
+subtest 'subresource-only namespace counts against auto-fill' => sub {
+  # The user-visible half of the same change: a second namespace that is
+  # reachable only through a subresource is still a second candidate, so
+  # _resolve_namespace has no single one to pick and falls back to undef.
+  # Auto-filling 'only-ns' here would silently aim a tool at the wrong
+  # namespace.
+  my $k8s = make_k8s_with_namespaces('only-ns', 'status-only');
+
+  is_deeply([$k8s->permissions->allowed_namespaces], ['only-ns', 'status-only'],
+    'two reachable namespaces, one of them only via a subresource');
+  is($k8s->_resolve_namespace({}), undef,
+    'no auto-fill with two candidates');
 };
 
 subtest 'empty string namespace not treated as provided' => sub {

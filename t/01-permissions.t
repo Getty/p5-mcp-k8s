@@ -219,6 +219,25 @@ subtest 'allowed_namespaces excludes empty results' => sub {
   is_deeply(\@ns, ['default'], 'empty namespace excluded');
 };
 
+subtest 'allowed_namespaces keeps a subresource-only namespace' => sub {
+  # 'status-writer' grants nothing but patch on deployments/status. Discovery
+  # stores what it got, so the namespace lands in the map and counts as
+  # reachable - it is, that Role can do real work there. Were the subresource
+  # filtered out at discovery time, %ns_rules would come back empty and
+  # discover() would drop the namespace entirely.
+  my ($perms, $api) = make_perms('status-writer');
+
+  my @ns = $perms->allowed_namespaces;
+  is_deeply(\@ns, ['status-writer'],
+    'a Role granting only a subresource still makes its namespace reachable');
+
+  # And it is reachable while presenting nothing: allowed_resources filters
+  # subresources out again, so the namespace shows up with an empty resource
+  # list rather than a fabricated main endpoint.
+  is_deeply([$perms->allowed_resources('patch', 'status-writer')], [],
+    'without any main-endpoint resource to present');
+};
+
 subtest 'allowed_resources for list' => sub {
   my ($perms, $api) = make_perms('default');
 
