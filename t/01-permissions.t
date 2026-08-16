@@ -66,6 +66,15 @@ use MCP::K8s::Permissions;
         MockRule->new(['create'], ['pods']),
         MockRule->new(['get'], ['pods/log']),
       ];
+    } elsif ($namespace eq 'status-writer') {
+      # A correctly narrow Role for a controller that only writes status
+      return [
+        MockRule->new(['patch'], ['deployments/status']),
+      ];
+    } elsif ($namespace eq 'status-both') {
+      return [
+        MockRule->new(['patch'], ['deployments', 'deployments/status']),
+      ];
     } elsif ($namespace eq 'wildcard-verb') {
       return [
         MockRule->new(['*'], ['configmaps', 'secrets']),
@@ -330,6 +339,62 @@ subtest 'multiple namespace cross-isolation' => sub {
 
   ok(!$perms->can_do('patch', 'deployments', 'default'), 'default: no patch deployments');
   ok($perms->can_do('patch', 'deployments', 'deployer'), 'deployer: patch deployments');
+};
+
+# =================================================================
+# Subresources in the permission map
+#
+# RBAC treats a subresource as a resource in its own right: patch on
+# 'deployments' does not grant patch on 'deployments/status'. Discovery has to
+# keep those entries so can_do can see them, or a Role that grants the
+# subresource correctly gets a false denial.
+# =================================================================
+
+subtest 'can_do sees a narrowly granted subresource' => sub {
+  my ($perms, $api) = make_perms('status-writer');
+
+  ok($perms->can_do('patch', 'deployments/status', 'status-writer'),
+    'a Role granting only deployments/status can patch it');
+  ok(!$perms->can_do('patch', 'deployments', 'status-writer'),
+    'and that does not leak into the main endpoint');
+};
+
+subtest 'can_do separates a resource from its status subresource' => sub {
+  my ($perms, $api) = make_perms('status-both');
+
+  ok($perms->can_do('patch', 'deployments', 'status-both'),
+    'main endpoint granted');
+  ok($perms->can_do('patch', 'deployments/status', 'status-both'),
+    'status subresource granted');
+};
+
+subtest 'patch on a resource does not grant patch on its status' => sub {
+  # The load-bearing one: 'deployer' grants patch on deployments and nothing
+  # on deployments/status. A status write must stay denied - granting it here
+  # would hand out a permission RBAC never gave.
+  my ($perms, $api) = make_perms('deployer');
+
+  ok($perms->can_do('patch', 'deployments', 'deployer'),
+    'deployer patches deployments');
+  ok(!$perms->can_do('patch', 'deployments/status', 'deployer'),
+    'deployer does NOT get deployments/status for free');
+};
+
+subtest 'wildcard resource covers subresources' => sub {
+  my ($perms, $api) = make_perms('admin');
+
+  ok($perms->can_do('patch', 'deployments/status', 'admin'),
+    'resources: ["*"] covers subresources, as in Kubernetes');
+};
+
+subtest 'subresources stay out of allowed_resources' => sub {
+  # Discovery collects, presentation filters: allowed_resources feeds the tool
+  # descriptions, which must not grow subresource entries.
+  my ($perms, $api) = make_perms('status-both');
+
+  my @resources = $perms->allowed_resources('patch', 'status-both');
+  ok((grep { $_ eq 'deployments' } @resources), 'base resource listed');
+  ok(!(grep { m{/} } @resources), 'no subresource in the presented list');
 };
 
 done_testing;
