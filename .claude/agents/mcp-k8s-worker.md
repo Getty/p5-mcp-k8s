@@ -6,13 +6,13 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - mcp-k8s-core
-    - perl-core
-    - perl-moo
+    - getty-perl-core
+    - getty-perl-moo
     - perl-mcp
-    - perl-release-author-getty
+    - getty-perl-release-author-getty
     - perl-release-dist-ini
-    - git-commit-style
-    - karr
+    - getty-git-commit-style
+    - kanban-issues-karr-cli
 ---
 
 You are the mcp-k8s-worker for **MCP::K8s**.

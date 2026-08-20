@@ -1,6 +1,6 @@
 ---
 name: mcp-k8s-core
-description: Architecture and invariants for p5-mcp-k8s — the MCP-K8s distribution. RBAC-aware stdio MCP server for Kubernetes, SelfSubjectRulesReview discovery, 10 generic tools, 4-tier resource plural lookup, 3-tier auth, [@Author::GETTY] release bundle.
+description: Load before editing p5-mcp-k8s — the RBAC-aware stdio MCP server, SelfSubjectRulesReview discovery, the generic tools, resource plural lookup, the auth tiers.
 user-invocable: false
 model: inherit
 ---
@@ -185,6 +185,6 @@ POD folgt durchgehend der Deklaration, nicht umgekehrt: `sub foo {` gefolgt von
 oben verschieben. `$VERSION` steht in allen drei Modulen und wird vom
 Release-Bundle gepflegt.
 
-Release-Mechanik: skill `perl-release-author-getty`. dist.ini: skill
-`perl-release-dist-ini`. Moo-Muster: skill `perl-moo`. MCP-Server-Grundlagen:
+Release-Mechanik: skill `getty-perl-release-author-getty`. dist.ini: skill
+`perl-release-dist-ini`. Moo-Muster: skill `getty-perl-moo`. MCP-Server-Grundlagen:
 skill `perl-mcp`.

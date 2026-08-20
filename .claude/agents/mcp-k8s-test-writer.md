@@ -6,9 +6,9 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - mcp-k8s-core
-    - perl-core
-    - perl-moo
-    - karr
+    - getty-perl-core
+    - getty-perl-moo
+    - kanban-issues-karr-cli
 ---
 
 You are the mcp-k8s-test-writer for **MCP::K8s**.

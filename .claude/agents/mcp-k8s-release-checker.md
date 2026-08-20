@@ -6,9 +6,9 @@ allowed-tools: Read, Bash, Glob, Grep
 briefing:
   skills:
     - mcp-k8s-core
-    - perl-release-author-getty
+    - getty-perl-release-author-getty
     - perl-release-dist-ini
-    - karr
+    - kanban-issues-karr-cli
 ---
 
 You are the mcp-k8s-release-checker for **MCP::K8s**. Conventions from the skills above
