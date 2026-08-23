@@ -1,0 +1,57 @@
+---
+claimed_at: 2026-08-23T18:53:20Z
+claimed_by: sold-move
+class: standard
+created: 2026-08-16T02:09:50Z
+id: 14
+priority: medium
+status: backlog
+tags:
+- upstream
+- follow-up
+title: Re-evaluate plural tier 2 once IO::K8s and Kubernetes::REST ship their fixes
+updated: 2026-08-23T18:53:20Z
+---
+
+Tier 2 was guarded, not removed, so it can come back as soon as upstream lands. Both halves have to land before it is worth anything.
+
+State as of 2026-08-16:
+  io-k8s-p5 #33  DONE but unreleased. Measured against the local checkout: expand_class
+                 plus resource_plural now answers pods, deployments, ingresses,
+                 networkpolicies, endpoints — the irregular ones included. CPAN still
+                 shows 1.107.
+  kubernetes-rest #15  still backlog. expand_class continues to force
+                 resource_map -> resource_map_from_cluster -> GET /openapi/v2.
+
+Why one alone is not enough: our guard skips tier 2 whenever the client would have to
+fetch, and resource_map_from_cluster defaults to 1. So an IO::K8s release on its own
+changes nothing here — tier 2 stays skipped, correctly, because the roundtrip it costs
+is still worse than the tier-3 discovery we already do.
+
+When both are released:
+  - Bump the cpanfile floors, but only then. A minimum version states what we actually
+    rely on; raising it before we depend on the behaviour claims a dependency we do not
+    have.
+  - Re-check whether the resource_map_from_cluster guard is still the right condition,
+    or whether tier 2 should simply run again.
+  - Tier 3 stays regardless: it is the only source for CRDs a local resource map does
+    not know.
+  - CLAUDE.md's plural section and the _resource_plural POD both describe the current,
+    degraded state and would need updating.
+
+Do not bump cpanfile before then: 1.107 is what the workarounds are written against and
+what the suite is green on.
+
+
+
+--- 2026-08-23 ---
+Beide Voraussetzungen liegen installiert: IO::K8s 1.108 und Kubernetes::REST
+1.108. Das "once ... ship their fixes" meinte ein CPAN-Release und war nie eine
+Bedingung. Plural-Tier-2 kann jetzt gemessen werden.
+
+Ausserdem heute in diesem Repo gefixt (ohne eigenes Ticket): t/09-auth-regression.t
+las die Entwicklermaschine. Zwei Subtests erwarten, dass die kubeconfig-Suche
+scheitert -- der Kommentar im Test sagt es selbst ("when no kubeconfig exists on
+disk"), erzwungen wurde es nicht. Mit einer echten ~/.kube/config gelang Tier 3
+und die Suite war rot. Jetzt setzen beide Subtests HOME auf ein leeres tempdir
+und loeschen KUBECONFIG; gegengeprueft mit und ohne kubeconfig, 130 Tests gruen.
