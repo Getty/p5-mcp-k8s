@@ -224,7 +224,7 @@ dzil release
 ```
 
 `[@Author::GETTY]` bumpt `$VERSION`, taggt und legt das GitHub-Release an. Mechanik:
-skill `perl-release-author-getty`. Release nur mit ausdrücklicher Freigabe des
+skill `getty-perl-release-author-getty`. Release nur mit ausdrücklicher Freigabe des
 Maintainers — siehe `.claude/rules/mcp-k8s-rules.md`.
 
 ## Sharp Edges (für Entwickler)
