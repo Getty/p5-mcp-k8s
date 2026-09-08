@@ -8,4 +8,5 @@ requires 'namespace::clean';
 
 on test => sub {
   requires 'Test::More', '0.96';
+  requires 'File::Temp', 0;
 };

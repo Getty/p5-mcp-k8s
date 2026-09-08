@@ -1,8 +1,18 @@
 use strict;
 use warnings;
 use Test::More;
+use File::Temp qw( tempdir );
 
 use MCP::K8s;
+
+# Tier 3 reads $ENV{KUBECONFIG} first and $ENV{HOME}/.kube/config second
+# (Kubernetes::REST::Kubeconfig). The two subtests that assert a Tier 3
+# *failure* therefore only hold on a machine with no kubeconfig at all --
+# with a real ~/.kube/config present the lookup succeeded and the expected
+# failure never came, so the suite failed on every developer box and any CI
+# that writes a kubeconfig. Point both variables at an empty directory in
+# those subtests instead of assuming the machine has none.
+my $NO_KUBECONFIG_HOME = tempdir( CLEANUP => 1 );
 
 # =================================================================
 # Regression tests for Issue #1: MCP_K8S_TOKEN alone did not engage
@@ -21,8 +31,8 @@ use MCP::K8s;
 
 # No mocks needed for Tier 1 / Tier 2 — Kubernetes::REST->new() does not
 # contact the cluster on construction. Tier 3 is exercised by reaching
-# the recognizable "Kubeconfig not found" failure when no kubeconfig
-# exists on disk.
+# the recognizable "Kubeconfig not found" failure, with $NO_KUBECONFIG_HOME
+# making sure there really is none to find.
 
 subtest 'Issue #1: env-token alone engages Tier 1 with in-cluster default' => sub {
   # The exact failure case from the bug report: MCP_K8S_TOKEN set, no
@@ -62,6 +72,8 @@ subtest 'Issue #1: empty env-token is treated as "no token"' => sub {
   local $ENV{MCP_K8S_TOKEN}  = '';
   local $ENV{MCP_K8S_SERVER} = undef;
   delete $ENV{MCP_K8S_SERVER};
+  local $ENV{HOME} = $NO_KUBECONFIG_HOME;
+  delete local $ENV{KUBECONFIG};
 
   my $k8s = MCP::K8s->new(namespaces => ['default']);
   my $api = eval { $k8s->api };
@@ -160,6 +172,8 @@ subtest 'Issue #1: predicate state after ->api built when Tier 1 fell through' =
   local $ENV{MCP_K8S_TOKEN}  = '';
   local $ENV{MCP_K8S_SERVER} = undef;
   delete $ENV{MCP_K8S_SERVER};
+  local $ENV{HOME} = $NO_KUBECONFIG_HOME;
+  delete local $ENV{KUBECONFIG};
 
   my $k8s = MCP::K8s->new(namespaces => ['default']);
   my $api = eval { $k8s->api };
