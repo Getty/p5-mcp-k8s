@@ -107,6 +107,8 @@ MCP::K8s supports three authentication methods, tried in order:
 
 In-cluster auth reads the service account token from `/var/run/secrets/kubernetes.io/serviceaccount/token` and uses the in-cluster CA certificate automatically.
 
+When embedding MCP::K8s in your own Perl code, `MCP::K8s->new(kubeconfig_path => '/path/to/kubeconfig', context_name => 'prod')` names the kubeconfig file directly instead of relying on `KUBECONFIG`.
+
 ## Environment Variables
 
 | Variable | Description | Default |

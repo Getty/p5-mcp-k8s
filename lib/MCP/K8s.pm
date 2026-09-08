@@ -40,6 +40,12 @@ use namespace::clean;
   );
   $k8s->to_stdio;
 
+  # Embedded, with a kubeconfig outside the default location:
+  my $k8s = MCP::K8s->new(
+    kubeconfig_path => '/etc/myapp/clusters/prod/kubeconfig',
+    context_name    => 'prod',
+  );
+
 =head1 DESCRIPTION
 
 MCP::K8s provides an MCP (Model Context Protocol) server that gives AI
@@ -122,6 +128,25 @@ has context_name => (
 
 Optional. Kubeconfig context name to use. Read from C<$ENV{MCP_K8S_CONTEXT}>
 by default. If not set, the kubeconfig's C<current-context> is used.
+
+=cut
+
+has kubeconfig_path => (
+  is        => 'ro',
+  predicate => 1,
+);
+
+=attr kubeconfig_path
+
+Optional. Path to the kubeconfig file used by the kubeconfig auth tier,
+passed through to L<Kubernetes::REST::Kubeconfig/kubeconfig_path>. For an
+embedder that keeps its kubeconfigs outside the default location: with a
+same-named context in C<~/.kube/config>, only the explicit path tells the
+two apart. Accepts whatever Kubeconfig accepts there — a single path, a
+C<KUBECONFIG>-style path list, or an arrayref. Not read from the
+environment; if not set, Kubeconfig does its own lookup
+(C<$ENV{KUBECONFIG}>, then C<~/.kube/config>). Has no effect when
+L</token> or the in-cluster service account engages an earlier tier.
 
 =cut
 
@@ -309,11 +334,17 @@ sub _build_api {
   # `has_context_name` stays false until the reader fires, so an env-only
   # MCP_K8S_CONTEXT would be silently dropped. Pass the materialized value
   # through, dropping empty/undef so Kubeconfig keeps its current-context
-  # fallback when nothing is set.
+  # fallback when nothing is set. kubeconfig_path has no env default, but
+  # the same gate applies: Kubeconfig's own kubeconfig_path default is a
+  # plain (non-lazy) default, so an explicit undef or '' would override
+  # its KUBECONFIG / ~/.kube/config lookup instead of leaving it alone.
   my $context_name = $self->context_name;
+  my $kubeconfig_path = $self->kubeconfig_path;
   my %kc_args;
   $kc_args{context_name} = $context_name
     if defined $context_name && length $context_name;
+  $kc_args{kubeconfig_path} = $kubeconfig_path
+    if defined $kubeconfig_path && length $kubeconfig_path;
   my $kc = Kubernetes::REST::Kubeconfig->new(%kc_args);
   return $kc->api;
 }
@@ -1613,7 +1644,7 @@ MCP::K8s supports three authentication methods, tried in order:
 
 =item 2. B<In-cluster> — Auto-detected when running as a Kubernetes pod (reads mounted service account token from C</var/run/secrets/kubernetes.io/serviceaccount/token>)
 
-=item 3. B<Kubeconfig> — Reads C<~/.kube/config> (or C<$KUBECONFIG>), optionally filtered by C<MCP_K8S_CONTEXT>
+=item 3. B<Kubeconfig> — Reads C<~/.kube/config> (or C<$KUBECONFIG>), optionally filtered by C<MCP_K8S_CONTEXT>. An embedder names a specific file with the L</kubeconfig_path> constructor argument.
 
 =back
 

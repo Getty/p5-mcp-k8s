@@ -137,7 +137,7 @@ prüfen.
 |---|---|---|
 | 1 | `MCP_K8S_TOKEN` gesetzt | `MCP_K8S_SERVER`, sonst in-cluster default |
 | 2 | `/var/run/secrets/kubernetes.io/serviceaccount/token` existiert | dito |
-| 3 | Fallback | `Kubernetes::REST::Kubeconfig` mit `MCP_K8S_CONTEXT` |
+| 3 | Fallback | `Kubernetes::REST::Kubeconfig` mit `MCP_K8S_CONTEXT`, optional `kubeconfig_path` (nur Konstruktor, kein Env) |
 
 Tier 1 und 2 hängen `ssl_ca_file` an, wenn die in-cluster CA-Datei existiert — auch bei
 explizitem Token. Die Pfade sind file-scoped `my`-Variablen in `MCP/K8s.pm`.
@@ -212,6 +212,7 @@ keiner darf einen brauchen.**
 | `t/07-auth-alternatives.t` | Token-/in-cluster-/Kubeconfig-Tiers |
 | `t/08-resource-discovery.t` | API-Discovery-Endpunkte, Subresource-Filter, Tier-2-Guard |
 | `t/09-auth-regression.t` | Predicate-Fallen der Auth-Tiers (env-only, leerer String) |
+| `t/10-kubeconfig-path.t` | `kubeconfig_path` gewinnt über `KUBECONFIG`, Fallback ohne Attribut unverändert |
 
 Zwei Mock-Details, die falsch nachgebaut lautlos das Falsche testen: der
 `SelfSubjectRulesReview` wird per `new_object` gebaut und per **`create`** submitted

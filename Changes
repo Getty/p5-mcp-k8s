@@ -29,6 +29,9 @@
   - Fix MCP_K8S_TOKEN, MCP_K8S_SERVER and MCP_K8S_CONTEXT being ignored
     when set only in the environment; all three auth tiers honour them
     now (closes #1).
+  - MCP::K8s->new takes kubeconfig_path, passed through to
+    Kubernetes::REST::Kubeconfig, so an embedder names the kubeconfig file
+    directly instead of going through KUBECONFIG. No new env var.
   - Require MCP 0.15, Kubernetes::REST 1.107 and IO::K8s 1.107.
   - The Net::Async::MCP examples in README and examples/ need
     Net::Async::MCP 0.004 or newer: MCP 0.15 speaks the stateless
