@@ -1,0 +1,18 @@
+---
+claimed_at: 2026-09-25T18:56:39Z
+claimed_by: claude
+class: standard
+completed: 2026-09-25T18:56:39Z
+created: 2026-09-25T04:58:43Z
+id: 16
+priority: low
+started: 2026-09-25T18:51:05Z
+status: done
+tags:
+- tests
+- follow-up
+title: 'Test-Mocks: expand_class liefert fuer jeden Kind die SSRR-Klasse'
+updated: 2026-09-25T18:56:39Z
+---
+
+In t/01, t/03 und t/05 gibt MockK8sAPI->expand_class fuer jeden Kind IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview zurueck. Harmlos, solange die Klasse in diesen Tests nicht geladen ist. Seit Tier 2 wieder immer laeuft (k14): laedt ein Test sie einmal, pluralisiert Tier 2 jeden Nicht-Map-Kind zu selfsubjectrulesreviews und der Test prueft lautlos das Falsche. Mock so bauen, dass expand_class nur fuer SelfSubjectRulesReview die Klasse liefert. Lane: mcp-k8s-test-writer.
