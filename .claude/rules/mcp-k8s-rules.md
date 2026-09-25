@@ -113,7 +113,7 @@ a category of exception.
   Auto-picking the first one would be a silent misfire against a live cluster.
 - **`k8s_apply` recognizes the create-conflict by regex** (`/409|AlreadyExists/i`)
   against the error string, in `_is_conflict_error`. Not laziness: Kubernetes::REST
-  1.107 croaks a plain string and only its deprecated v0 modules carry typed errors,
+  1.108 croaks a plain string and only its deprecated v0 modules carry typed errors,
   so there is nothing structured to check. Narrowing the match to the current croak
   format would be worse — an upstream rewording becomes a false negative. Revisit when
   the client grows typed errors; leave a regression test if touched.

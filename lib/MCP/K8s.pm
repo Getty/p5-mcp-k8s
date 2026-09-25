@@ -410,9 +410,8 @@ lookup:
 
 =item 1. Static C<%RESOURCE_PLURALS> map (fast, zero-cost)
 
-=item 2. C<resource_plural()> on the L<IO::K8s> class the Kind resolves to —
-only for classes that bring their own, and only when asking costs no cluster
-roundtrip (see below)
+=item 2. C<resource_plural()> on the L<IO::K8s> class the Kind resolves to
+via the client's C<expand_class>
 
 =item 3. API server discovery cache (lazy, one-time query)
 
@@ -420,22 +419,19 @@ roundtrip (see below)
 
 =back
 
-B<Tier 2 is narrower than it reads.> C<IO::K8s::Role::APIObject> defines
-C<resource_plural()> as C<undef>, and not one class shipped with L<IO::K8s>
-1.107 overrides it — for every built-in Kind this tier answers nothing and
-the lookup falls through to tier 3. It earns its place only for a CRD
-provider's own class, registered in the client's C<resource_map>, that
-overrides C<resource_plural()> itself.
+Tier 2 answers every built-in Kind: L<IO::K8s> carries the upstream plurals
+on its classes, and L<Kubernetes::REST>'s C<expand_class> resolves a name its
+built-in map knows without a request, even when C<resource_map_from_cluster>
+is set. It also answers for a CRD provider's class registered with the
+client, which brings its own C<resource_plural()>.
 
-It is also skipped whenever answering would cost a cluster roundtrip.
-C<expand_class> resolves through L<Kubernetes::REST>'s C<resource_map>, and
-with C<resource_map_from_cluster> — the 1.107 default — building that map is
-a full C<GET /openapi/v2>: megabytes, for an answer the shipped classes give
-as C<undef> anyway. A client built with C<< resource_map_from_cluster => 0 >>,
-and any object that does not have the attribute at all, still goes through
-tier 2, so a locally registered CRD class keeps working.
+For a Kind nothing ships, C<expand_class> consults the client's aggregated
+discovery (C<GET /api>, C<GET /apis>) — the same resolution the tool's own
+API call does right after, so this tier moves that cost rather than adding
+it. Such a Kind resolves to L<IO::K8s::Unstructured> or to a class name that
+does not load; neither has C<resource_plural()>, so the lookup falls through.
 
-Which leaves CRD support resting on tier 3 in practice: it asks C</api/v1>
+Tier 3 is therefore the source for CRDs without a class: it asks C</api/v1>
 and C</apis> and gets back the plurals the API server itself uses.
 
 =cut
@@ -443,21 +439,16 @@ and C</apis> and gets back the plurals the API server itself uses.
   # Tier 1: Static map (fast path)
   return $RESOURCE_PLURALS{$resource} if $RESOURCE_PLURALS{$resource};
 
-  # Tier 2: IO::K8s class method (CRD classes like IO::K8s::...)
-  # Guarded: expand_class resolves through the client's lazy resource_map, and
-  # with resource_map_from_cluster (Kubernetes::REST 1.107 default) that map is
-  # fetched with GET /openapi/v2 — the whole OpenAPI spec, for a result the
-  # shipped IO::K8s classes all answer with undef. Tier 3 handles those kinds.
-  # Revisit once kubernetes-rest #15 makes expand_class fetch-free.
-  my $api = $self->api;
-  my $map_from_cluster = $api->can('resource_map_from_cluster')
-    && $api->resource_map_from_cluster;
-  unless ($map_from_cluster) {
-    my $class = eval { $api->expand_class($resource) };
-    if ($class && $class->can('resource_plural')) {
-      my $plural = eval { $class->resource_plural };
-      return $plural if defined $plural && length $plural;
-    }
+  # Tier 2: resource_plural() on the IO::K8s class the Kind resolves to.
+  # Built-in Kinds resolve from the client's built-in map without a request;
+  # an unknown Kind costs the client's aggregated discovery (GET /api, /apis),
+  # which the tool's own API call right after would trigger anyway. A Kind
+  # nothing ships resolves to a fabricated name or IO::K8s::Unstructured,
+  # neither of which can resource_plural, so it falls through to tier 3.
+  my $class = eval { $self->api->expand_class($resource) };
+  if ($class && $class->can('resource_plural')) {
+    my $plural = eval { $class->resource_plural };
+    return $plural if defined $plural && length $plural;
   }
 
   # Tier 3: API server discovery (cached)
@@ -565,7 +556,7 @@ Decide whether a failed C<create> failed because the resource already
 exists (HTTP 409 / C<AlreadyExists>), which is the signal for
 L</k8s_apply> to fall back to a patch.
 
-This is a string match, deliberately. L<Kubernetes::REST> 1.107 does not
+This is a string match, deliberately. L<Kubernetes::REST> 1.108 does not
 raise a typed exception for API errors: C<create> runs the response
 through C<_check_response>, which C<croak>s with
 
@@ -573,7 +564,7 @@ through C<_check_response>, which C<croak>s with
 
 C<Kubernetes::REST::Error> and C<Kubernetes::REST::RemoteError> still
 exist, but only as compatibility helpers for the deprecated v0 API — no
-code path in 1.107 throws them, so there is no C<< ->code >> to check.
+code path in 1.108 throws them, so there is no C<< ->code >> to check.
 The match stays wide (status code B<or> C<reason>) so that it survives a
 reworded error as long as either token is still in it; narrowing it to
 the exact croak format above would trade one fragility for a worse one.

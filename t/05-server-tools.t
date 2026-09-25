@@ -30,7 +30,7 @@ use JSON::MaybeXS;
     );
   }
 
-  # Failure strings mirror Kubernetes::REST 1.107: the v1 API has no typed
+  # Failure strings mirror Kubernetes::REST 1.108: the v1 API has no typed
   # exceptions, _check_response croaks
   #   "Kubernetes API error (<context>): <status> <body>"
   # and that string is all k8s_apply's conflict detection ever gets to see.
@@ -57,6 +57,9 @@ use JSON::MaybeXS;
 
   sub list {
     my ($self, $kind, %args) = @_;
+    # Same escape hatch as get_object, for a list of real IO::K8s objects.
+    return bless { items => $self->{list_items} }, 'MockK8sList'
+      if $self->{list_items};
     return MockK8sList->new($kind, $args{namespace});
   }
 
@@ -413,6 +416,69 @@ subtest 'k8s_get yaml output renders real YAML booleans' => sub {
     'nested boolean too');
   unlike($yaml, qr/perl\/scalar|JSON::PP::Boolean/,
     'no Perl internals anywhere in the manifest');
+};
+
+subtest 'k8s_get and k8s_list handle IO::K8s::Unstructured' => sub {
+  # Kubernetes::REST 1.108 inflates a Kind no class ships (a CRD without a
+  # provider) to IO::K8s::Unstructured: apiVersion, kind and metadata are
+  # accessors, everything else - spec, status - rides in the unknown-field
+  # bag, so there is no ->spec or ->status to call. Built from a real JSON
+  # decode, so the booleans are JSON::PP::Boolean exactly as on the wire.
+  my $doc = '{"apiVersion":"cilium.io/v2","kind":"CiliumNetworkPolicy",'
+          . '"metadata":{"name":"allow-dns","namespace":"admin-ns",'
+          . '"labels":{"app":"dns"}},'
+          . '"spec":{"enableDefaultDeny":{"ingress":true,"egress":false},'
+          . '"endpointSelector":{}}}';
+  my $io  = IO::K8s->new;
+  my $obj = $io->json_to_object('IO::K8s::Unstructured', $doc);
+  isa_ok($obj, 'IO::K8s::Unstructured', 'fixture');
+  ok(!$obj->can('spec') && !$obj->can('status'),
+    'fixture really has no spec/status accessor');
+
+  my $u_api = MockK8sAPI->new;
+  $u_api->{get_object} = $obj;
+  $u_api->{list_items} = [
+    $obj,
+    $io->struct_to_object('IO::K8s::Unstructured',
+      JSON::MaybeXS->new->decode($doc)),
+  ];
+  my $u_k8s = MCP::K8s->new(
+    api        => $u_api,
+    namespaces => ['admin-ns'],
+  );
+  my %call = (
+    resource  => 'CiliumNetworkPolicy',
+    name      => 'allow-dns',
+    namespace => 'admin-ns',
+  );
+  my $get = find_tool($u_k8s, 'k8s_get');
+
+  my $summary = JSON::MaybeXS->new->decode($get->code->($get, { %call }));
+  is($summary->{name}, 'allow-dns', 'summary: name');
+  is($summary->{kind}, 'CiliumNetworkPolicy', 'summary: kind from the document');
+  is_deeply($summary->{labels}, { app => 'dns' }, 'summary: labels');
+
+  my $json_out = $get->code->($get, { %call, output => 'json' });
+  like($json_out, qr/"ingress"\s*:\s*true/,  'json: true stays true');
+  like($json_out, qr/"egress"\s*:\s*false/,  'json: false stays false');
+  my $json = JSON::MaybeXS->new->decode($json_out);
+  is($json->{apiVersion}, 'cilium.io/v2', 'json: apiVersion kept');
+  ok(exists $json->{spec}{endpointSelector}, 'json: spec round-trips');
+
+  my $yaml = $get->code->($get, { %call, output => 'yaml' });
+  like($yaml, qr/^\s*ingress: true$/m,  'yaml: true boolean');
+  like($yaml, qr/^\s*egress: false$/m,  'yaml: false boolean');
+  like($yaml, qr/^apiVersion: cilium\.io\/v2$/m, 'yaml: apiVersion');
+  unlike($yaml, qr/perl\/scalar|JSON::PP::Boolean/, 'yaml: no Perl internals');
+
+  my $list = find_tool($u_k8s, 'k8s_list');
+  my $listed = JSON::MaybeXS->new->decode($list->code->($list, {
+    resource  => 'CiliumNetworkPolicy',
+    namespace => 'admin-ns',
+  }));
+  is($listed->{count}, 2, 'list: both items');
+  is_deeply([ map { $_->{name} } @{ $listed->{items} } ],
+    ['allow-dns', 'allow-dns'], 'list: summaries carry names');
 };
 
 subtest 'k8s_get yaml output refuses loudly when it cannot render YAML' => sub {
@@ -917,7 +983,7 @@ subtest 'k8s_apply reports non-conflict create errors' => sub {
 
 subtest '_is_conflict_error recognises the real client error' => sub {
   ok($k8s->_is_conflict_error($MockK8sAPI::CONFLICT_ERROR),
-    'Kubernetes::REST 1.107 409 croak is a conflict');
+    'Kubernetes::REST 1.108 409 croak is a conflict');
   ok($k8s->_is_conflict_error('Kubernetes API error (create Pod): 409 {}'),
     'status code alone is enough');
   ok($k8s->_is_conflict_error('the object AlreadyExists'),

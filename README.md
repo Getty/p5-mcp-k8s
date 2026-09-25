@@ -93,7 +93,7 @@ This tells the LLM exactly what it can do without needing to call `k8s_permissio
 
 ### CRD Support
 
-MCP::K8s supports Custom Resource Definitions (CRDs) out of the box. Resource plurals are resolved dynamically via API server discovery, so CRDs like Cilium's `CiliumNetworkPolicy` work without any configuration.
+MCP::K8s supports Custom Resource Definitions (CRDs) out of the box. Resource plurals are resolved dynamically via API server discovery, so CRDs like Cilium's `CiliumNetworkPolicy` work without any configuration. A CRD with no typed [IO::K8s](https://metacpan.org/pod/IO::K8s) class comes back as `IO::K8s::Unstructured`: `k8s_get` with `output` `json` or `yaml` returns the full object, the default summary shows metadata and kind only.
 
 ## Authentication
 

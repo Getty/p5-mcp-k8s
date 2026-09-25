@@ -94,7 +94,7 @@ der Map behält für immer seine statische Beschreibung.
 - **`k8s_apply`** versucht `create` und fällt bei 409/AlreadyExists auf einen
   Strategic-Merge-Patch zurück. Die Conflict-Erkennung sitzt in `_is_conflict_error`
   und ist ein Regex gegen den Fehlerstring (`/409|AlreadyExists/i`) — nicht aus
-  Bequemlichkeit: Kubernetes::REST 1.107 `croak`t einen reinen String
+  Bequemlichkeit: Kubernetes::REST 1.108 `croak`t einen reinen String
   (`Kubernetes API error (create <class>): <status> <body>`), typisierte Fehler gibt
   es nur in den v0-Kompatibilitätsmodulen. Ein engerer Match auf genau dieses Format
   wäre **schlechter** — jede Umformulierung upstream ergäbe ein False Negative,
@@ -114,17 +114,21 @@ RBAC spricht Plural (`pods`), die API spricht Kind (`Pod`). `_resource_plural`
 einmalig gecacht, Subresources (`name` enthält `/`) übersprungen, (4) Heuristik
 (lowercase, `s`, `ys`→`ies`).
 
-**Tier 2 feuert in der Praxis nicht.** Seit IO::K8s 1.107 definiert keine einzige
-ausgelieferte Klasse ein `resource_plural` — `Role::APIObject` liefert `undef`, und
-der einzige Override im ganzen Baum steht in einem POD-Beispiel. Der Tier greift nur
-noch für CRD-Provider-Klassen aus einer lokal registrierten resource_map. Zusätzlich
-ist er hinter einen Guard gelegt: würde der Client seine resource_map vom Cluster
-holen (`resource_map_from_cluster`, Default 1 in Kubernetes::REST 1.107), wird Tier 2
-übersprungen — `expand_class` zieht sonst über `k8s`→`resource_map` einen vollen
-`/openapi/v2`-Download, um danach `undef` zu liefern. **CRD-Support ruht damit
-faktisch auf Tier 3.** Upstream: io-k8s-p5 #33 (Plurale für Built-ins),
-kubernetes-rest #15 (`expand_class` soll nicht fetchen); landet eins davon, lebt
-Tier 2 wieder.
+**Tier 2 beantwortet seit 1.108 jeden Built-in-Kind.** IO::K8s 1.108 trägt die
+Upstream-Plurale an den Klassen, und `Kubernetes::REST::expand_class` löst Namen der
+eingebauten Map ohne Request auf — auch bei `resource_map_from_cluster` (weiterhin
+Default 1). Ein Guard davor, wie bis 0.003, spart nichts mehr: der Tool-Call ruft direkt
+danach selbst `list/get/...($kind)` mit demselben `expand_class`. Ein unbekannter Kind
+kostet dem Client eine aggregated Discovery (`GET /api`, `/apis`, kein `/openapi/v2`
+mehr) und landet als `IO::K8s::Unstructured` oder als nicht ladbarer Klassenname —
+beide ohne `resource_plural`, also weiter zu Tier 3. **CRDs ohne Klasse kommen damit
+aus Tier 3**, CRD-Provider-Klassen mit eigenem `resource_plural` aus Tier 2. Die
+Floors `IO::K8s`/`Kubernetes::REST` 1.108 in der cpanfile stehen genau für diesen
+Vertrag; `t/08` hält ihn gegen den echten Client fest (0 Requests).
+
+Ein CRD ohne Klasse kommt seit Kubernetes::REST 1.108 als `IO::K8s::Unstructured`
+zurück statt zu scheitern: `output=json`/`yaml` sind vollständig, die Summary zeigt
+nur Metadaten und `kind` (kein `spec`/`status`-Accessor).
 
 Tier 3 schluckt alle Fehler still — Absicht, damit ein Cluster ohne Discovery-Rechte
 den Server nicht umbringt. Der Preis: **eine falsche Pluralisierung sieht aus wie ein
@@ -207,10 +211,10 @@ keiner darf einen brauchen.**
 | `t/02-resource-plurals.t` | 4-Tier-Pluralisierung |
 | `t/03-namespace-resolution.t` | Auto-Fill genau bei einem Namespace |
 | `t/04-format-helpers.t` | Summary-/List-Formatierung |
-| `t/05-server-tools.t` | Tool-Registrierung und -Ausführung, `force_409`-Pfad von `k8s_apply`, `k8s_patch`-Statuspfad |
+| `t/05-server-tools.t` | Tool-Registrierung und -Ausführung, `force_409`-Pfad von `k8s_apply`, `k8s_patch`-Statuspfad, `IO::K8s::Unstructured` |
 | `t/06-kubernetes-alias.t` | `MCP::Kubernetes` ist `MCP::K8s` |
 | `t/07-auth-alternatives.t` | Token-/in-cluster-/Kubeconfig-Tiers |
-| `t/08-resource-discovery.t` | API-Discovery-Endpunkte, Subresource-Filter, Tier-2-Guard |
+| `t/08-resource-discovery.t` | API-Discovery-Endpunkte, Subresource-Filter, Tier 2 ohne Request gegen den echten Client |
 | `t/09-auth-regression.t` | Predicate-Fallen der Auth-Tiers (env-only, leerer String) |
 | `t/10-kubeconfig-path.t` | `kubeconfig_path` gewinnt über `KUBECONFIG`, Fallback ohne Attribut unverändert |
 

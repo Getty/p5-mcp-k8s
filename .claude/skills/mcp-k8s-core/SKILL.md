@@ -154,10 +154,10 @@ genutzte Oberfläche (`new_object`, `create`, `list`, `get`, `delete`, `patch`,
 | `t/02-resource-plurals.t` | 4-Tier-Pluralisierung |
 | `t/03-namespace-resolution.t` | Auto-Fill genau bei einem Namespace |
 | `t/04-format-helpers.t` | Summary-/List-Formatierung |
-| `t/05-server-tools.t` | Tool-Registrierung und -Ausführung inkl. `force_409`-Pfad von `k8s_apply` |
+| `t/05-server-tools.t` | Tool-Registrierung und -Ausführung inkl. `force_409`-Pfad von `k8s_apply`, `k8s_patch`-Statuspfad, `IO::K8s::Unstructured` |
 | `t/06-kubernetes-alias.t` | `MCP::Kubernetes` ist `MCP::K8s` |
 | `t/07-auth-alternatives.t` | Token-/in-cluster-/Kubeconfig-Tiers |
-| `t/08-resource-discovery.t` | API-Discovery-Endpunkte, Subresource-Filter |
+| `t/08-resource-discovery.t` | API-Discovery-Endpunkte, Subresource-Filter, Tier 2 ohne Request |
 
 `prove -l t/` ist der Lauf. Die Suite braucht `Kubernetes::REST` und `IO::K8s`
 installiert — fehlen sie, kompiliert `MCP::K8s` nicht und *alle* Files scheitern mit

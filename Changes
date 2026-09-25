@@ -23,16 +23,16 @@
   - k8s_logs reads logs through Kubernetes::REST's log(); an HTTP error
     now reads "Failed to get logs for pod/<name>: ... 404 ..." instead of
     "Error getting logs: 404 ...".
-  - Plural lookup no longer downloads /openapi/v2 through expand_class().
-    The IO::K8s class tier is skipped when the client would have to fetch
-    and still runs for a locally registered CRD provider class.
+  - Plural lookup resolves built-in Kinds through IO::K8s's upstream
+    plurals without a request; expand_class() no longer downloads
+    /openapi/v2. CRDs without a class still come from API discovery.
   - Fix MCP_K8S_TOKEN, MCP_K8S_SERVER and MCP_K8S_CONTEXT being ignored
     when set only in the environment; all three auth tiers honour them
     now (closes #1).
   - MCP::K8s->new takes kubeconfig_path, passed through to
     Kubernetes::REST::Kubeconfig, so an embedder names the kubeconfig file
     directly instead of going through KUBECONFIG. No new env var.
-  - Require MCP 0.15, Kubernetes::REST 1.107 and IO::K8s 1.107.
+  - Require MCP 0.15, Kubernetes::REST 1.108 and IO::K8s 1.108.
   - The Net::Async::MCP examples in README and examples/ need
     Net::Async::MCP 0.004 or newer: MCP 0.15 speaks the stateless
     2026-07-28 revision, which 0.003 rejects with "-32602 Missing protocol
