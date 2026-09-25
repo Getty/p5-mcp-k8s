@@ -19,7 +19,16 @@ use MCP::K8s::Permissions;
     my ($self, $review) = @_;
     return $review;
   }
-  sub expand_class { 'IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview' }
+  # Real Kubernetes::REST::expand_class always returns a class name, never
+  # undef; a Kind nothing ships resolves to a name that just doesn't load.
+  # Answering with the SSRR class for every Kind (as this used to) is
+  # harmless only while nothing in the process has loaded it - k16.
+  sub expand_class {
+    my ($self, $kind) = @_;
+    return 'IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview'
+      if $kind eq 'SelfSubjectRulesReview';
+    return 'IO::K8s::'.$kind;
+  }
 }
 
 {

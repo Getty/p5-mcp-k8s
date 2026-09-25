@@ -110,7 +110,19 @@ use JSON::MaybeXS;
       { method => $method, kind => $kind, name => $name, %args };
   }
 
-  sub expand_class { 'IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview' }
+  # Real Kubernetes::REST::expand_class always returns a class name, never
+  # undef; a Kind nothing ships resolves to a name that just doesn't load,
+  # so a caller's ->can('resource_plural') safely falls through to the next
+  # tier. Answering with the SSRR class for every Kind (as this used to) is
+  # harmless only while nothing in the process has loaded it - once loaded,
+  # plural tier 2 (unguarded since k14) would resolve any Kind through it,
+  # silently pluralizing everything to 'selfsubjectrulesreviews' - k16.
+  sub expand_class {
+    my ($self, $kind) = @_;
+    return 'IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview'
+      if $kind eq 'SelfSubjectRulesReview';
+    return 'IO::K8s::'.$kind;
+  }
 
   # Kubernetes::REST::log() returns the log body and croaks on API errors.
   # Records the call so tests can check what k8s_logs asked for.
@@ -1017,6 +1029,20 @@ subtest 'k8s_apply permission denied' => sub {
     },
   });
   like($result, qr/Permission denied/, 'apply denied for wrong namespace');
+};
+
+subtest 'expand_class mock does not leak the SSRR class onto other kinds (k16)' => sub {
+  # Plural tier 2 runs unguarded since k14: it hands every Kind to
+  # expand_class and trusts a resource_plural() it finds. MockK8sAPI's
+  # expand_class used to answer with the SSRR class name for every Kind,
+  # not just 'SelfSubjectRulesReview' - harmless only because nothing in
+  # this process had loaded that class. Load it here and prove a non-map
+  # Kind still falls through to heuristic pluralization instead of
+  # silently resolving to 'selfsubjectrulesreviews'.
+  require IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview;
+
+  is($k8s->_resource_plural('CustomWidget'), 'customwidgets',
+    'a non-map Kind is not mispluralized through the loaded SSRR class');
 };
 
 done_testing;
