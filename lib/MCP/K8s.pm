@@ -61,13 +61,13 @@ namespaces available, so the LLM always knows exactly what it can do.
 
 =over 4
 
-=item 1. B<Connect> — Authenticates via direct token, in-cluster service account, or kubeconfig
+=item 1. B<Register> — Registers the MCP tools at construction; no cluster connection needed yet
 
-=item 2. B<Discover> — Submits C<SelfSubjectRulesReview> requests to discover RBAC permissions per namespace
+=item 2. B<Connect> — On the first request, authenticates via direct token, in-cluster service account, or kubeconfig
 
-=item 3. B<Register> — Creates MCP tools with dynamic descriptions reflecting actual permissions
+=item 3. B<Discover> — Submits C<SelfSubjectRulesReview> requests to discover RBAC permissions per namespace, then rewrites the tool descriptions to reflect them
 
-=item 4. B<Serve> — Runs the MCP protocol over stdio, checking permissions on every tool call
+=item 4. B<Serve> — Answers MCP requests over any transport (stdio, HTTP, embedded via L<Net::Async::MCP>), checking permissions on every tool call
 
 =back
 
@@ -197,7 +197,9 @@ ArrayRef of namespace names to operate on. Configured via:
 
 =item * Auto-discovery — lists all namespaces from the cluster
 
-=item * Fallback — C<['default']> if discovery fails
+=item * In-cluster fallback — the service account's mounted namespace, if listing fails
+
+=item * Fallback — C<['default']> if discovery fails outside a cluster
 
 =back
 
@@ -812,7 +814,7 @@ B<Parameters:>
 
 =item C<namespace> (string) — Target namespace
 
-=item C<patch_type> (string) — Strategy: C<strategic> (default), C<merge>, or C<json>
+=item C<patch_type> (string) — Strategy: C<strategic> (default; C<merge> with C<subresource>), C<merge>, or C<json>
 
 =item C<subresource> (string) — C<status> to write the status subresource
 

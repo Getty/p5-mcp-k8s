@@ -59,10 +59,10 @@ Add to your project's `.mcp.json`:
 
 ## How It Works
 
-1. **Connect** — Authenticates via direct token, in-cluster service account, or kubeconfig
-2. **Discover** — Submits `SelfSubjectRulesReview` requests to discover RBAC permissions per namespace
-3. **Register** — Creates MCP tools with dynamic descriptions reflecting actual permissions
-4. **Serve** — Runs the MCP protocol over stdio, checking permissions on every tool call
+1. **Register** — Registers the MCP tools at construction; no cluster connection needed yet
+2. **Connect** — On the first request, authenticates via direct token, in-cluster service account, or kubeconfig
+3. **Discover** — Submits `SelfSubjectRulesReview` requests to discover RBAC permissions per namespace, then rewrites the tool descriptions to reflect them
+4. **Serve** — Answers MCP requests over any transport (stdio, HTTP, embedded via `Net::Async::MCP`), checking permissions on every tool call
 
 ## MCP Tools
 
@@ -132,8 +132,8 @@ Use a dedicated ServiceAccount with minimal permissions. Example manifests are i
 kubectl apply -f examples/readonly-serviceaccount.yaml
 
 # Get a token
-MCP_K8S_TOKEN=$(kubectl create token mcp-k8s-readonly -n mcp-k8s)
-MCP_K8S_SERVER=https://$(kubectl config view -o jsonpath='{.clusters[0].cluster.server}')
+export MCP_K8S_TOKEN=$(kubectl create token mcp-k8s-readonly -n mcp-k8s)
+export MCP_K8S_SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 mcp-k8s
 ```
 
@@ -144,7 +144,7 @@ RBAC is the single source of truth — if the service account shouldn't have acc
 When running MCP::K8s as a pod inside the cluster, authentication is automatic:
 
 1. Mount a ServiceAccount (e.g. from the examples above)
-2. Set `MCP_K8S_NAMESPACES` if needed (otherwise auto-discovers from the mounted SA namespace)
+2. Set `MCP_K8S_NAMESPACES` if needed (otherwise lists all namespaces the service account can see, falling back to its mounted namespace)
 3. The in-cluster token and CA cert are read automatically
 
 ## Security
@@ -181,7 +181,7 @@ async sub main {
 
   my $engine = Langertha::Engine::Anthropic->new(
     api_key     => $ENV{ANTHROPIC_API_KEY},
-    model       => 'claude-sonnet-4-6',
+    model       => 'claude-sonnet-5',
     mcp_servers => [$mcp],
   );
 

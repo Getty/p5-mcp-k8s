@@ -157,7 +157,7 @@ my $mcp = Net::Async::MCP->new(server => $server);
 $loop->add($mcp);
 
 # ── AI Engine ────────────────────────────────────────────────────────
-my $model = $ENV{MCP_K8S_DEMO_MODEL} || 'claude-sonnet-4-6';
+my $model = $ENV{MCP_K8S_DEMO_MODEL} || 'claude-sonnet-5';
 info("Model: $model");
 print "\n";
 
