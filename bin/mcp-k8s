@@ -117,7 +117,7 @@ The server registers 10 MCP tools, each gated by RBAC permissions:
 
 =item B<k8s_create> — Create a resource from a manifest
 
-=item B<k8s_patch> — Partially update a resource
+=item B<k8s_patch> — Partially update a resource (strategic/merge/JSON patch), optionally its C<status> subresource
 
 =item B<k8s_delete> — Delete a resource
 
