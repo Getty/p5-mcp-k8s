@@ -36,8 +36,8 @@ This rule depends on whether the Agent/Task tool is available to you.
 
 - **You can spawn subagents** (orchestrating main agent): Do NOT touch behavior-relevant
   MCP-K8s code yourself — delegate to `mcp-k8s-worker` (or `mcp-k8s-test-writer` for
-  test mechanics, `mcp-k8s-release-checker` for a release audit). Your lane: coordinate,
-  inspect, plan, review diffs, run tests, manage git, edit non-behavioral docs. When in
+  test mechanics, `mcp-k8s-release-manager` for a release audit). Your lane: coordinate,
+  inspect, plan, review diffs, run tests, edit non-behavioral docs. When in
   doubt, delegate. Why: only the `mcp-k8s-*` agents get their skills force-loaded via
   `briefing.skills`; you get no briefing and would touch internals with too little
   context.
@@ -52,13 +52,13 @@ selection, output formatting, tests. Pure prose docs and `Changes` notes are not
 ## Coordination — karr board (always in scope)
 
 Ticket coordination is the orchestrating agent's job, so `karr` is always in scope —
-don't invoke the `kanban-issues-karr-cli` skill first, just use it. Git-native kanban; state lives in
+don't invoke the `kanban-issues-karr-coordination` skill first, just use it. Git-native kanban; state lives in
 `refs/karr/*`; this repo is a single distribution — one board, no cross-repo handoff.
 Day-to-day: `karr list --compact` / `karr board` for open work; `karr show ID` for
 detail; `karr create/edit/move/handoff` for the usual workflow; mutating commands
 auto-sync, `karr sync --pull|--push` for explicit exchange. Use karr to record
 decisions worth solidifying, drift to reconcile, and follow-up work that should not
-block the current change. Full command surface: skill `kanban-issues-karr-cli`.
+block the current change. Full command surface: skill `kanban-issues-karr-coordination`.
 
 **Serialize board mutations when fanning out.** Keep implementation work parallel if
 you like, but collect results and then loop `karr move`/`handoff`/`sync` sequentially
@@ -129,5 +129,5 @@ a category of exception.
 Module loading, cpanfile pinning: skill `getty-perl-core`. Moo attributes, lazy builders,
 `extends`: skill `getty-perl-moo`. MCP server and tool registration: skill `perl-mcp`.
 `[@Author::GETTY]` bundle, POD, `{{$NEXT}}`: skill `getty-perl-release-author-getty`.
-dist.ini mechanics: `perl-release-dist-ini`. Commit messages: `getty-git-commit-style`.
+dist.ini mechanics: `perl-release-dist-ini`. Commits: only `mcp-k8s-release-manager` commits (it carries `getty-git-commit-style`).
 Don't duplicate.

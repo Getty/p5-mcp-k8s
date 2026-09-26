@@ -273,7 +273,7 @@ principle and lane are in `.claude/rules/mcp-k8s-rules.md`.
 |---|---|
 | Implement / refactor / debug behavior-relevant code | `mcp-k8s-worker` |
 | Write or extend tests (mechanics) | `mcp-k8s-test-writer` |
-| Pre-release audit | `mcp-k8s-release-checker` |
+| Commits, `Changes`, card → done, pre-release audit | `mcp-k8s-release-manager` |
 
 The agents carry their skills via `briefing.skills` (see `.claude/agents/`); the main
 agent delegates rather than loading them. Skill sources live under `.claude/skills/`.

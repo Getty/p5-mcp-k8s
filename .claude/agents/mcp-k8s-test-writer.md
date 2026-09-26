@@ -8,7 +8,7 @@ briefing:
     - mcp-k8s-core
     - getty-perl-core
     - getty-perl-moo
-    - kanban-issues-karr-cli
+    - kanban-issues-karr-ticket
 ---
 
 You are the mcp-k8s-test-writer for **MCP::K8s**.
