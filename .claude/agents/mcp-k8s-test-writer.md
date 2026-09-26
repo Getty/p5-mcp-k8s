@@ -2,7 +2,6 @@
 name: mcp-k8s-test-writer
 description: "Write MCP::K8s tests with Test::More and the in-file mock API packages — RBAC discovery, permission gates, plural lookup, tool execution, auth tiers. Tests never require a live cluster. Use for test additions, regression scaffolding, and coverage of new tools."
 model: sonnet
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - mcp-k8s-core

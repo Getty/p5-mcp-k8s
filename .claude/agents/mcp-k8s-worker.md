@@ -2,7 +2,6 @@
 name: mcp-k8s-worker
 description: "Default mcp-k8s worker — implement, refactor, debug, and test code in this distribution. Pre-loaded with MCP::K8s architecture (RBAC discovery via SelfSubjectRulesReview, 10 generic tools, 4-tier plural lookup, 3-tier auth) and all Getty Perl conventions. Leaves a commit-ready tree; never commits — commits belong to mcp-k8s-release-manager."
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - mcp-k8s-core
