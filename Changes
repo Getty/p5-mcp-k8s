@@ -1,4 +1,7 @@
 {{$NEXT}}
+  - Require IO::K8s 1.109 and Kubernetes::REST 1.109: string-map fields
+    (labels, annotations, ConfigMap data, ...) now serialize numeric values
+    as JSON strings, which the API server requires.
   - Fix RBAC-aware tool descriptions reaching only run_stdio clients. They
     are now built on the first tools/list or tools/call of any transport,
     so the Net::Async::MCP path from README, an embedded to_stdio and the
