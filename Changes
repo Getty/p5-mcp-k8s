@@ -1,3 +1,5 @@
+{{$NEXT}}
+
 0.003     2026-10-01 16:06:40Z
   - Require IO::K8s 1.109 and Kubernetes::REST 1.109: string-map fields
     (labels, annotations, ConfigMap data, ...) now serialize numeric values
