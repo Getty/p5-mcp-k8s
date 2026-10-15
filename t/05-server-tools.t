@@ -121,6 +121,7 @@ use JSON::MaybeXS;
     my ($self, $kind) = @_;
     return 'IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview'
       if $kind eq 'SelfSubjectRulesReview';
+    return $self->{class_map}{$kind} if $self->{class_map}{$kind};
     return 'IO::K8s::'.$kind;
   }
 
@@ -971,6 +972,30 @@ subtest 'k8s_apply falls back to patch on 409' => sub {
 
   # Disable 409 simulation
   $api->{force_409} = 0;
+};
+
+subtest 'k8s_apply fallback patch type follows the kind (k19)' => sub {
+  my $tool = find_tool($k8s->server, 'k8s_apply');
+  my %cases = (
+    ConfigMap   => [ 'IO::K8s::Api::Core::V1::ConfigMap', 'strategic' ],
+    Deployment  => [ 'IO::K8s::CertManager::V1::Certificate', 'merge' ],
+    StatefulSet => [ 'IO::K8s::Unstructured', 'merge' ],
+  );
+  for my $kind (sort keys %cases) {
+    my ($class, $type) = @{ $cases{$kind} };
+    $api->{class_map}{$kind} = $class;
+    $api->{force_409}   = 1;
+    $api->{patch_calls} = [];
+    $tool->code->($tool, {
+      resource  => $kind,
+      namespace => 'test-ns',
+      manifest  => { metadata => { name => 'existing' } },
+    });
+    is($api->{patch_calls}[0]{type}, $type, "$kind falls back to a $type patch");
+    delete $api->{class_map}{$kind};
+  }
+  $api->{force_409}   = 0;
+  $api->{patch_calls} = [];
 };
 
 subtest 'k8s_apply reports non-conflict create errors' => sub {

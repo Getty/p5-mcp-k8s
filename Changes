@@ -1,4 +1,7 @@
 {{$NEXT}}
+  - Fix k8s_apply failing with 415 when updating an existing custom resource:
+    the fallback patch is strategic only for built-in kinds (IO::K8s::Api::*)
+    and a merge patch for all others (k19).
   - Fix k8s_apply treating any create error whose body merely contains "409"
     as a conflict and patching over the real error. The decision now comes
     from Kubernetes::REST::APIError->is_conflict; the string match remains

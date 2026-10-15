@@ -926,7 +926,8 @@ B<Parameters:>
 
 Create or update a Kubernetes resource (like C<kubectl apply>). Tries to
 create the resource first; if it already exists (409 Conflict), falls back
-to a strategic merge patch.
+to a strategic merge patch for built-in kinds and to a JSON merge patch
+for everything else (custom resources answer a strategic merge with 415).
 
 B<Parameters:>
 
@@ -1552,14 +1553,18 @@ sub _register_tools {
         }
       }
 
-      # Fall back to strategic merge patch
+      # Fall back to a patch
       unless ($can_patch) {
         return "Resource already exists and cannot patch $resource" . ($ns ? " in namespace $ns" : "");
       }
 
+      # Strategic merge is understood by the built-in kinds only
+      # (IO::K8s::Api::*); a custom resource answers it with 415, so
+      # everything else gets a JSON merge patch.
+      my $class = eval { $self->api->expand_class($resource) } // '';
       my %api_args = (
         patch => $manifest,
-        type  => 'strategic',
+        type  => $class =~ /^IO::K8s::Api::/ ? 'strategic' : 'merge',
       );
       $api_args{namespace} = $ns if defined $ns;
 
