@@ -1,4 +1,7 @@
 {{$NEXT}}
+  - Fix k8s_events and k8s_list resource=Event returning only event names:
+    the summary now carries type, reason, message, count, timestamps and
+    involvedObject (kind/name), also for events.k8s.io note/regarding (k17).
 
 0.003     2026-10-01 16:06:40Z
   - Require IO::K8s 1.109 and Kubernetes::REST 1.109: string-map fields

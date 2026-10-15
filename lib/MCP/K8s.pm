@@ -589,7 +589,8 @@ sub _format_resource_summary {
 Extract a concise summary hashref from an L<IO::K8s> object, suitable for
 LLM consumption. Includes metadata (name, namespace, labels, creation time),
 kind, status fields (phase, replicas, conditions), and key spec fields
-(containers, ports, type).
+(containers, ports, type). Events add type, reason, message, count,
+timestamps and the involved object (kind/name).
 
 The summary is intentionally compact — for full details, the C<k8s_get>
 tool with C<output =E<gt> 'json'> should be used.
@@ -608,6 +609,23 @@ tool with C<output =E<gt> 'json'> should be used.
 
   if ($obj->can('kind') && $obj->kind) {
     $summary{kind} = $obj->kind;
+  }
+
+  # Events carry their payload at the top level (core/v1) or under
+  # note/regarding (events.k8s.io), not in spec/status.
+  if (($obj->can('kind') && ($obj->kind // '') eq 'Event')
+      || $obj->can('involvedObject') || $obj->can('regarding')) {
+    for my $f (qw( type reason message note count firstTimestamp lastTimestamp eventTime )) {
+      next unless $obj->can($f);
+      my $v = $obj->$f;
+      $summary{$f} = $v if defined $v && $v ne '';
+    }
+    for my $f (qw( involvedObject regarding )) {
+      next unless $obj->can($f) && $obj->$f;
+      my $ref = $obj->$f;
+      my %r = map { $ref->can($_) && defined $ref->$_ ? ( $_ => $ref->$_ ) : () } qw( kind name );
+      $summary{$f} = \%r if %r;
+    }
   }
 
   if ($obj->can('status') && $obj->status) {
