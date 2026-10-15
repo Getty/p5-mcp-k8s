@@ -1,4 +1,8 @@
 {{$NEXT}}
+  - Fix k8s_apply treating any create error whose body merely contains "409"
+    as a conflict and patching over the real error. The decision now comes
+    from Kubernetes::REST::APIError->is_conflict; the string match remains
+    only for errors that are not such objects (k18).
   - Fix k8s_events and k8s_list resource=Event returning only event names:
     the summary now carries type, reason, message, count, timestamps and
     involvedObject (kind/name), also for events.k8s.io note/regarding (k17).

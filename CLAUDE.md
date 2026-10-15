@@ -93,13 +93,10 @@ der Map behält für immer seine statische Beschreibung.
   `kubectl rollout restart`. Braucht `patch`, nicht `update`.
 - **`k8s_apply`** versucht `create` und fällt bei 409/AlreadyExists auf einen
   Strategic-Merge-Patch zurück. Die Conflict-Erkennung sitzt in `_is_conflict_error`
-  und ist ein Regex gegen den Fehlerstring (`/409|AlreadyExists/i`) — nicht aus
-  Bequemlichkeit: Kubernetes::REST 1.108 `croak`t einen reinen String
-  (`Kubernetes API error (create <class>): <status> <body>`), typisierte Fehler gibt
-  es nur in den v0-Kompatibilitätsmodulen. Ein engerer Match auf genau dieses Format
-  wäre **schlechter** — jede Umformulierung upstream ergäbe ein False Negative,
-  während der weite Match sie überlebt. Neu bewerten, sobald der Client typisierte
-  Fehler bekommt.
+  und entscheidet über `Kubernetes::REST::APIError->is_conflict` (Client 1.109
+  wirft typisierte Fehler). Nur ein Fehler, der kein APIError-Objekt ist (String
+  eines älteren Clients/Wrappers), fällt auf den Regex `/409|AlreadyExists/i`
+  zurück.
 
 **Warum 10 generische Tools statt hunderter spezifischer:** Kubernetes hat 50+
 Built-in-Typen plus beliebige CRDs. Generische Tools mit `resource`-Parameter spiegeln

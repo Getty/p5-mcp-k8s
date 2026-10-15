@@ -993,6 +993,31 @@ subtest 'k8s_apply reports non-conflict create errors' => sub {
   $api->{force_create_error} = undef;
 };
 
+subtest 'k8s_apply: typed 422 with 409 in the body is not a conflict' => sub {
+  require Kubernetes::REST::APIError;
+  $api->{force_create_error} = Kubernetes::REST::APIError->new(
+    code    => 422,
+    context => 'create IO::K8s::Api::Core::V1::Service',
+    body    => '{"kind":"Status","status":"Failure","reason":"Invalid",'
+             . '"message":"Service \"svc-4090\" is invalid","code":422}',
+  );
+  my $tool = find_tool($k8s->server, 'k8s_apply');
+  my $result = $tool->code->($tool, {
+    resource  => 'ConfigMap',
+    namespace => 'test-ns',
+    manifest  => { metadata => { name => 'svc-4090' }, data => { k => 'v' } },
+  });
+  like($result, qr/^Failed to create ConfigMap/, 'validation error is reported, not patched over');
+  unlike($result, qr/updated/, 'no patch fallback');
+
+  $api->{force_create_error} = Kubernetes::REST::APIError->new(
+    code => 409, context => 'create X',
+    body => '{"kind":"Status","reason":"AlreadyExists","code":409}',
+  );
+  ok($k8s->_is_conflict_error($api->{force_create_error}), 'typed 409 is a conflict');
+  $api->{force_create_error} = undef;
+};
+
 subtest '_is_conflict_error recognises the real client error' => sub {
   ok($k8s->_is_conflict_error($MockK8sAPI::CONFLICT_ERROR),
     'Kubernetes::REST 1.108 409 croak is a conflict');

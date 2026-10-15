@@ -9,6 +9,7 @@ use Kubernetes::REST;
 use Kubernetes::REST::Kubeconfig;
 use JSON::MaybeXS;
 use Carp qw( croak );
+use Scalar::Util qw( blessed );
 use namespace::clean;
 
 =head1 SYNOPSIS
@@ -552,31 +553,26 @@ sub _is_conflict_error {
 
 =method _is_conflict_error
 
-  if ($self->_is_conflict_error("$@")) { ... }
+  if ($self->_is_conflict_error($@)) { ... }
 
 Decide whether a failed C<create> failed because the resource already
-exists (HTTP 409 / C<AlreadyExists>), which is the signal for
-L</k8s_apply> to fall back to a patch.
+exists (HTTP 409), which is the signal for L</k8s_apply> to fall back to a
+patch.
 
-This is a string match, deliberately. L<Kubernetes::REST> 1.108 does not
-raise a typed exception for API errors: C<create> runs the response
-through C<_check_response>, which C<croak>s with
+L<Kubernetes::REST> 1.109 throws a L<Kubernetes::REST::APIError> for an HTTP
+error status; the decision is its C<is_conflict>, i.e. the status code and
+nothing else. A 422 or 403 whose body merely mentions "409" is not a
+conflict.
 
-  Kubernetes API error (create <class>): <status> <body>
-
-C<Kubernetes::REST::Error> and C<Kubernetes::REST::RemoteError> still
-exist, but only as compatibility helpers for the deprecated v0 API — no
-code path in 1.108 throws them, so there is no C<< ->code >> to check.
-The match stays wide (status code B<or> C<reason>) so that it survives a
-reworded error as long as either token is still in it; narrowing it to
-the exact croak format above would trade one fragility for a worse one.
-
-Revisit when the client grows typed errors.
+Only an error that is B<not> such an object (a plain string from an older
+client or a wrapper) falls back to a match against C</409|AlreadyExists/i>.
 
 =cut
 
   return 0 unless defined $err;
-  return $err =~ /409|AlreadyExists/i ? 1 : 0;
+  return $err->is_conflict ? 1 : 0
+    if blessed($err) && $err->isa('Kubernetes::REST::APIError');
+  return "$err" =~ /409|AlreadyExists/i ? 1 : 0;
 }
 
 sub _format_resource_summary {
@@ -1550,7 +1546,7 @@ sub _register_tools {
         }
 
         # If 409 Conflict / AlreadyExists, fall through to patch
-        my $err = "$@";
+        my $err = $@;
         unless ($self->_is_conflict_error($err)) {
           return "Failed to create $resource: $err";
         }
