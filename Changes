@@ -1,4 +1,7 @@
 {{$NEXT}}
+  - Fix MCP_K8S_NAMESPACES keeping whitespace around names ('default,
+    production' lost "production") and empty elements, and the plural
+    heuristic turning Gateway into "gatewaies" (k21).
   - Fix k8s_apply failing with 415 when updating an existing custom resource:
     the fallback patch is strategic only for built-in kinds (IO::K8s::Api::*)
     and a merge patch for all others (k19).

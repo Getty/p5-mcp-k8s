@@ -357,7 +357,8 @@ sub _build_namespaces {
 
   # From environment variable
   if (my $env = $ENV{MCP_K8S_NAMESPACES}) {
-    return [ split /,/, $env ];
+    my @ns = grep { length } split /\s*,\s*/, $env =~ s/^\s+|\s+$//gr;
+    return \@ns if @ns;
   }
 
   # In-cluster: read mounted namespace as default
@@ -465,7 +466,7 @@ and C</apis> and gets back the plurals the API server itself uses.
   # Tier 4: Heuristic fallback
   my $plural = lc($resource);
   $plural .= 's' unless $plural =~ /s$/;
-  $plural =~ s/ys$/ies/;
+  $plural =~ s/([^aeiou])ys$/$1ies/;
   return $plural;
 }
 
