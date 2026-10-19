@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-10-19T20:31:52Z
+created: 2026-10-06T19:43:37Z
+id: 21
+priority: low
+started: 2026-10-15T04:54:03Z
+status: done
+tags:
+- bug
+- review-2026-10-06
+title: MCP_K8S_NAMESPACES is split without trimming; plural heuristic turns Gateway
+  into 'gatewaies
+updated: 2026-10-19T20:31:52Z
+---
+
+Two small input-handling slips in lib/MCP/K8s.pm:
+
+1. `_build_namespaces` (line 358-360): `split /,/, $env` - `MCP_K8S_NAMESPACES="default, production"` yields the namespace `' production'`; its SelfSubjectRulesReview fails (warned), the namespace silently drops out of `allowed_namespaces`, and with one namespace left the tools start auto-filling `default`. Also an empty element from a trailing comma.
+2. Tier-4 plural heuristic (line 465-468): `s/ys$/ies/` runs on every word, so a Kind ending in vowel+y is mangled: `Gateway` -> `gatewaies` (Kubernetes::REST's own heuristic in `_build_path` guards with `[^aeiou]y$`). Only reached when tiers 2 and 3 fail (CRD without class and no discovery rights), and then shows up as a misleading 'Permission denied' as CLAUDE.md already warns.
+
+Done when: the list is split on `/\s*,\s*/` with empty entries dropped, the heuristic only rewrites consonant+y, both covered in t/02 and t/03.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: verified
+
+2026-10-15 04:55 Fix: Split auf /\s*,\s*/ mit Trim, leere Eintraege entfallen (nur Whitespace/Kommas faellt auf naechste Quelle durch); Heuristik s/([^aeiou])ys$/$1ies/. Tests t/02 (Gateway) + t/03 rot gegen altes lib, gruen jetzt; prove -lr t gruen (141).
+
+review: siehe Notiz
+
+2026-10-19 20:31 Koordinator 2026-10-19: geprueft und gemerged. Branch worktree-karr-abbau (4 Commits) auf lokalen main rebased, Suite 141 Tests gruen gegen IO::K8s 1.110 (installiert) und gegen den lokalen Checkout io-k8s-p5 1.111-dev; reale IO::K8s-Objekte gegengeprueft (Event-Summary traegt type/reason/message/count/involvedObject/lastTimestamp, Gateway->gateways, Namespace-Split ' a , b ,, ' -> a,b). Merge: git merge --ff-only, main jetzt 30bbb1b. Commit bleibt lokal, kein Push.
