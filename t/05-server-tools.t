@@ -46,8 +46,23 @@ use JSON::MaybeXS;
     . '"message":"configmaps is forbidden","code":403}'
     . " at lib/Kubernetes/REST.pm line 437.\n";
 
+  # A SelfSubjectRulesReview without a namespace is rejected by the API
+  # server: the review is namespace-scoped by design and an empty one comes
+  # back as 400 "no namespace on request". The mock reproduces that, so a
+  # discovery that reaches for the cluster scope this way fails loudly
+  # instead of silently leaving the cluster scope empty.
+  our $NO_NAMESPACE_ERROR =
+      'Kubernetes API error (create IO::K8s::Api::Authorization::V1::SelfSubjectRulesReview): 400 '
+    . '{"kind":"Status","status":"Failure","reason":"BadRequest",'
+    . '"message":"no namespace on request","code":400}'
+    . " at lib/Kubernetes/REST.pm line 437.\n";
+
   sub create {
     my ($self, $obj) = @_;
+    if ($obj->can('kind') && $obj->kind eq 'SelfSubjectRulesReview') {
+      push @{ $self->{reviews} ||= [] }, $obj->namespace;
+      die $NO_NAMESPACE_ERROR if $obj->namespace eq '';
+    }
     if ($obj->can('kind') && $obj->kind ne 'SelfSubjectRulesReview') {
       die $self->{force_create_error} if $self->{force_create_error};
       die $CONFLICT_ERROR             if $self->{force_409};
@@ -143,6 +158,8 @@ use JSON::MaybeXS;
     my ($class, $namespace) = @_;
     bless { namespace => $namespace // '' }, $class;
   }
+  sub kind      { 'SelfSubjectRulesReview' }
+  sub namespace { $_[0]->{namespace} }
   sub status {
     my ($self) = @_;
     return MockSSRRStatus->new($self->{namespace});
@@ -174,9 +191,10 @@ use JSON::MaybeXS;
     } elsif ($namespace eq 'admin-ns') {
       # Wildcard role: in Kubernetes resources: ["*"] covers subresources too.
       @rules = (MockSSRRRule->new(['*'], ['*']));
-    } elsif ($namespace eq '') {
-      @rules = (MockSSRRRule->new(['list'], ['namespaces']));
     }
+    # There is no branch for the empty namespace: the API server rejects a
+    # review without one (400 no namespace on request), so the cluster scope
+    # is derived from the namespace reviews instead of being reviewed itself.
     bless { rules => \@rules }, $class;
   }
   sub resourceRules { $_[0]->{rules} }
@@ -335,6 +353,18 @@ subtest 'k8s_permissions tool returns summary' => sub {
   ok(length($result) > 0, 'permissions summary not empty');
   like($result, qr/test-ns/, 'summary mentions test namespace');
   like($result, qr/pods/, 'summary mentions pods');
+};
+
+subtest 'discovery never reviews without a namespace' => sub {
+  # A SelfSubjectRulesReview is namespace-scoped: the API server answers a
+  # review without one with 400 "no namespace on request". The mock dies
+  # with exactly that, so a discovery that reached for the cluster scope
+  # this way would come back empty - and take every cluster-scoped Kind
+  # with it. The cluster scope is derived from the namespace reviews.
+  my @reviews = @{ $api->{reviews} || [] };
+  ok(scalar @reviews, 'the review was submitted');
+  is_deeply([sort @reviews], ['test-ns'],
+    'exactly one review, for the one namespace - none without a namespace');
 };
 
 subtest 'k8s_list tool works' => sub {

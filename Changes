@@ -1,4 +1,14 @@
 {{$NEXT}}
+  - Fix cluster-scoped permissions being empty. The RBAC discovery sent a
+    SelfSubjectRulesReview without a namespace, which the API server
+    rejects with 400 "no namespace on request" - so every cluster-scoped
+    kind (Node, Namespace, CRDs) was denied, also for a cluster-admin.
+    The cluster scope is derived from the namespace reviews now: what all
+    of them have in common is what the account may do cluster-wide.
+  - BEHAVIOUR CHANGE: a cluster-scoped kind is called without a namespace
+    and checked against the cluster scope; a namespaced kind without a
+    namespace answers "namespace required" instead of "Permission denied"
+    (k20).
   - Fix MCP_K8S_NAMESPACES keeping whitespace around names ('default,
     production' lost "production") and empty elements, and the plural
     heuristic turning Gateway into "gatewaies" (k21).
