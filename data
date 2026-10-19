@@ -1,0 +1,37 @@
+---
+class: standard
+completed: 2026-10-19T20:31:08Z
+created: 2026-10-06T19:43:18Z
+id: 17
+priority: high
+started: 2026-10-15T04:49:50Z
+status: done
+tags:
+- bug
+- tools
+- review-2026-10-06
+title: 'k8s_events returns only event names: reason, message, type and involvedObject
+  are dropped'
+updated: 2026-10-19T20:31:08Z
+---
+
+`k8s_events` (lib/MCP/K8s.pm:1385-1395) formats the listed Events through `_format_list` -> `_format_resource_summary` (lib/MCP/K8s.pm:582-644). That summary only reads `metadata`, `kind`, `status` and `spec`. A core/v1 `Event` has neither `spec` nor `status`; everything that makes an event useful (`reason`, `message`, `type`, `count`, `involvedObject`, `lastTimestamp`) is top-level and never copied.
+
+Reproduce:
+
+```
+perl -Ilib -MMCP::K8s -MIO::K8s -e 'my $k=MCP::K8s->new(namespaces=>["default"]); my $ev=IO::K8s->new->struct_to_object("Event",{metadata=>{name=>"web.17a",namespace=>"default"},involvedObject=>{kind=>"Pod",name=>"web"},reason=>"BackOff",message=>"Back-off restarting failed container",type=>"Warning",count=>7}); print $k->_to_json($k->_format_resource_summary($ev))'
+```
+
+prints only `{"kind":"Event","name":"web.17a","namespace":"default"}`. The tool is advertised as 'Get Kubernetes events for debugging' and the LLM gets a list of opaque event names. `k8s_list resource=Event` has the same problem. t/05 only checks the selector/permission plumbing, not the content.
+
+Done when: an event summary carries at least type, reason, message, count, involvedObject (kind/name) and last/first timestamp (events.k8s.io fields `note`/`regarding` if that class is used), with a test asserting the message text reaches the tool output.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: verified
+
+2026-10-15 04:50 Fix: _format_resource_summary traegt jetzt type/reason/message/note/count/Timestamps und involvedObject/regarding (kind/name). Test t/04 'event summary...' rot gegen altes lib/, jetzt gruen; prove -lr t gruen (138). Commit auf Branch worktree-karr-abbau. Randbefund: Vorgabe-Worker-Agent mcp-k8s-worker nicht startbar (briefing: unbekannte Skills), daher selbst umgesetzt.
+
+review: siehe Notiz
+
+2026-10-19 20:30 Koordinator 2026-10-19: geprueft und gemerged. Branch worktree-karr-abbau (4 Commits) auf lokalen main rebased, Suite 141 Tests gruen gegen IO::K8s 1.110 (installiert) und gegen den lokalen Checkout io-k8s-p5 1.111-dev; reale IO::K8s-Objekte gegengeprueft (Event-Summary traegt type/reason/message/count/involvedObject/lastTimestamp, Gateway->gateways, Namespace-Split ' a , b ,, ' -> a,b). Merge: git merge --ff-only, main jetzt 30bbb1b. Commit bleibt lokal, kein Push.
