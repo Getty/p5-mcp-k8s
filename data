@@ -1,0 +1,32 @@
+---
+class: standard
+completed: 2026-10-19T20:31:38Z
+created: 2026-10-06T19:43:28Z
+id: 19
+priority: medium
+started: 2026-10-15T04:52:27Z
+status: done
+tags:
+- bug
+- tools
+- crd
+- review-2026-10-06
+title: 'k8s_apply cannot update an existing custom resource: fallback is hard-wired
+  to strategic merge patch (415)'
+updated: 2026-10-19T20:31:38Z
+---
+
+After a 409 on create, `k8s_apply` patches with `type => 'strategic'` unconditionally (lib/MCP/K8s.pm:1546-1552) and offers no `patch_type` parameter. The same file documents that custom resources answer a strategic merge patch with 415 (lib/MCP/K8s.pm:1201-1202, POD 825-832; Kubernetes::REST patch_status POD says the same), and `k8s_patch subresource=status` defaults to merge for exactly that reason. So 'create or update' works for built-ins only: for any CRD kind the second apply ends in 'Failed to update Kind/name: 415 ...'. The module advertises CRD support through the generic tools.
+
+Not run against a cluster (no network in this review); follows from the code plus the API server behaviour the dist itself documents.
+
+Done when: the fallback picks merge patch for kinds that are not built-in (e.g. class is IO::K8s::Unstructured / not under IO::K8s::Api::, or retry with merge on 415), with a mock test; alternatively expose `patch_type` on `k8s_apply`.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: plausible
+
+2026-10-15 04:53 Fix: Fallback-Patch strategic nur wenn expand_class(kind) =~ /^IO::K8s::Api::/, sonst merge. Mock t/05 um class_map erweitert; Test (Deployment->CRD-Klasse, StatefulSet->Unstructured => merge, ConfigMap => strategic) rot gegen altes lib, gruen jetzt; prove -lr t gruen (140). Offen/Entscheidung Getty: patch_type als k8s_apply-Parameter (Public-API) NICHT gebaut; Empfehlung: nur bei Bedarf. Sichtbare Verhaltensaenderung nur fuer Nicht-Built-ins (vorher 415) - von Getty zu bestaetigen.
+
+review: siehe Notiz
+
+2026-10-19 20:31 Koordinator 2026-10-19: geprueft und gemerged. Branch worktree-karr-abbau (4 Commits) auf lokalen main rebased, Suite 141 Tests gruen gegen IO::K8s 1.110 (installiert) und gegen den lokalen Checkout io-k8s-p5 1.111-dev; reale IO::K8s-Objekte gegengeprueft (Event-Summary traegt type/reason/message/count/involvedObject/lastTimestamp, Gateway->gateways, Namespace-Split ' a , b ,, ' -> a,b). Merge: git merge --ff-only, main jetzt 30bbb1b. Commit bleibt lokal, kein Push.
