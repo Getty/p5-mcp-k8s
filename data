@@ -1,0 +1,37 @@
+---
+class: standard
+completed: 2026-10-19T20:31:23Z
+created: 2026-10-06T19:43:23Z
+id: 18
+priority: medium
+started: 2026-10-15T04:50:52Z
+status: done
+tags:
+- bug
+- tools
+- review-2026-10-06
+title: 'k8s_apply: 409 detection is still a substring regex although Kubernetes::REST
+  1.109 throws APIError'
+updated: 2026-10-19T20:31:23Z
+---
+
+`_is_conflict_error` (lib/MCP/K8s.pm:550-580) matches `/409|AlreadyExists/i` against the stringified error. k1 kept the regex because Kubernetes::REST 1.107/1.108 croaked plain strings ('Revisit when the client grows typed errors'). The cpanfile now requires Kubernetes::REST 1.109, whose `_check_response` throws `Kubernetes::REST::APIError` with `code`, `reason` and `is_conflict` (kubernetes-rest lib/Kubernetes/REST.pm:1536-1554, lib/Kubernetes/REST/APIError.pm). The premise of the k1 resolution is gone, and the POD (lib/MCP/K8s.pm:561-574) and CLAUDE.md ('typisierte Fehler gibt es nur in den v0-Kompatibilitaetsmodulen') describe a state that no longer exists.
+
+The wide match produces false positives on any create error whose body merely contains '409':
+
+```
+perl -Ilib -MMCP::K8s -e 'my $k=MCP::K8s->new(namespaces=>["default"]); print $k->_is_conflict_error(q{Kubernetes API error (create X): 422 {"message":"Service \"svc-4090\" is invalid: spec.ports: Required value","code":422}})'   # 1
+```
+
+Same for a 403 naming `system:serviceaccount:ns:sa-1409`. Effect in `k8s_apply` (lib/MCP/K8s.pm:1534-1553): the real validation/authorization error is discarded, a strategic patch is sent, and the LLM is told 'Failed to update X/name: 404 ...' for an object that never existed.
+
+Done when: `k8s_apply` branches on `ref $@ && $@->isa('Kubernetes::REST::APIError') && $@->is_conflict` (keeping a string fallback only for non-object errors if wanted), POD/CLAUDE.md are updated, and t/05 has a 422-with-'409'-in-body case that must not fall through to patch.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: verified
+
+2026-10-15 04:52 Fix: _is_conflict_error entscheidet bei Kubernetes::REST::APIError per is_conflict; String-Regex nur noch fuer Nicht-Objekt-Fehler (Abwaertskompat., bewusst beibehalten). k8s_apply reicht jetzt $@ als Objekt durch. Test t/05 (typed 422 mit 409 im Body) rot gegen altes lib (Test 40), gruen jetzt; prove -lr t gruen (139). POD + CLAUDE.md (Abschnitt k8s_apply) + Changes angepasst. Offen: CLAUDE.md 'Sharp Edges' und .claude/rules/mcp-k8s-rules.md beschreiben den Regex-Stand weiter (Prosa, nicht angefasst - Getty zur Pflege).
+
+review: siehe Notiz
+
+2026-10-19 20:31 Koordinator 2026-10-19: geprueft und gemerged. Branch worktree-karr-abbau (4 Commits) auf lokalen main rebased, Suite 141 Tests gruen gegen IO::K8s 1.110 (installiert) und gegen den lokalen Checkout io-k8s-p5 1.111-dev; reale IO::K8s-Objekte gegengeprueft (Event-Summary traegt type/reason/message/count/involvedObject/lastTimestamp, Gateway->gateways, Namespace-Split ' a , b ,, ' -> a,b). Merge: git merge --ff-only, main jetzt 30bbb1b. Commit bleibt lokal, kein Push.
