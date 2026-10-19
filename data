@@ -1,0 +1,41 @@
+---
+class: standard
+completed: 2026-10-19T21:20:48Z
+created: 2026-10-06T19:43:33Z
+id: 20
+priority: medium
+started: 2026-10-15T04:53:53Z
+status: done
+tags:
+- bug
+- rbac
+- review-2026-10-06
+title: Cluster-scope RBAC discovery sends SelfSubjectRulesReview with an empty namespace,
+  which the API server rejects
+updated: 2026-10-19T21:20:48Z
+---
+
+`Permissions::discover` adds a review with `spec.namespace => ''` 'for cluster-scoped resources' (lib/MCP/K8s/Permissions.pm:131-135) and swallows its failure (`eval`, no warn). kube-apiserver answers a SelfSubjectRulesReview without namespace with 400 'no namespace on request' (pkg/registry/authorization/selfsubjectrulesreview/rest.go) - the review is namespace-scoped by design. If that holds, `$rules{''}` never exists on a real cluster, and every `can_do($verb, $plural, '')` is false.
+
+Consequences in lib/MCP/K8s.pm: with more than one reachable namespace `_resolve_namespace` returns undef (line 540-547), every tool then checks `can_do(..., $ns // '')` (e.g. 986, 1046, 1369) and answers 'Permission denied: cannot list Node' - also for a cluster-admin, and also for a plain `k8s_list resource=Pod` without namespace, where the right answer would be 'namespace required'. Cluster-scoped kinds (Node, Namespace, PersistentVolume, ClusterRole, CRDs) are only reachable if the LLM guesses to pass an arbitrary namespace. The 'Cluster-scoped' block of `summary` never appears. The t/05 mock (t/05-server-tools.t:176) answers the '' review with rules, which is why the suite does not see it.
+
+Not verified against a live API server in this review - check first with `kubectl create --raw /apis/authorization.k8s.io/v1/selfsubjectrulesreviews -f -` and an empty namespace.
+
+Done when: cluster-scoped permissions come from something the API actually answers (the namespaced reviews already contain ClusterRoleBinding-granted rules; or SelfSubjectAccessReview per call), a missing namespace on a namespaced kind yields a 'namespace required' message instead of 'Permission denied', and the mock mirrors the 400.
+
+---
+Fleet review 2026-10-06 · kind: bug · confidence: plausible
+
+2026-10-15 04:54 Nicht umgesetzt. Grund: Premise (API-Server antwortet 400 'no namespace on request') ist nur live verifizierbar (kubectl create --raw ...), und die Loesung ist Designentscheidung des Maintainers (Cluster-Scope aus den namespaced Reviews ableiten vs. SelfSubjectAccessReview pro Call; neue Meldung 'namespace required' = Verhaltenswechsel). Empfehlung: SelfSubjectAccessReview (create, kein Namespace noetig) fuer cluster-scoped Kinds per Call + can_do-Cache; bei namespaced Kind ohne Namespace 'namespace required'; Mock t/05:176 soll '' mit 400 beantworten (SSRR-Mock wirft). Zuerst live pruefen, ob '' wirklich 400 liefert.
+
+2026-10-19 21:08 Entscheidung: Variante 1 umgesetzt - Cluster-Scope wird aus den Namespace-Reviews abgeleitet, kein SelfSubjectAccessReview pro Call.
+Begruendung: Upstream verarbeitet ClusterRoleBindings bei JEDEM Review (DefaultRuleResolver.RulesFor -> VisitRulesFor) und filtert NICHT nach Ressourcen-Scope. Ein namespaced Review enthaelt also die cluster-scoped Rechte aus ClusterRoleBindings. Der Schnittpunkt aller erfolgreichen Namespace-Reviews ist damit die cluster-weite Berechtigung; ein RoleBinding-Recht erscheint nur in seinem eigenen Namespace und faellt aus dem Schnittpunkt heraus. SelfSubjectAccessReview pro Call waere ein zusaetzlicher Request pro Tool-Call (plus Cache-Ablauf), die Ableitung kommt ohne zusaetzlichen Request aus.
+Scope-Trennung: Der Schnittpunkt enthaelt auch namespaced Ressourcen ('pods' aus einer ClusterRoleBinding). Sie werden rausgefiltert ueber die Scope-Information der API-Discovery (namespaced-Flag, CRDs) bzw. request-frei ueber die IO::K8s-Klasse (IO::K8s::Role::Namespaced). Der Wildcard-Eintrag '*' bleibt erhalten.
+Grenze (notiert, nicht entschieden): Bei genau EINEM konfigurierten Namespace kann ein RoleBinding-Recht cluster-scoped durchsickern, weil der Schnittpunkt dann nur ein Element hat. Der API-Server antwortet in dem Fall 403 - die Folge ist eine irritierende Fehlermeldung, keine Rechteausweitung.
+Nach aussen: Nur die Korrektur auf der Karte - 'namespace required' statt 'Permission denied' bei fehlendem Namespace auf einem namespaced Kind; Cluster-scoped Kinds werden ohne Namespace gerufen. Tool-Beschreibungen und allowed_namespaces unveraendert.
+
+2026-10-19 21:10 Live-Verifikation (read-only, Kontext cihq, 2026-10-19): mit dem alten lib (git archive main lib) und mit dem neuen lib dieselben MCP::K8s-Tool-Calls ausgefuehrt - 'k8s_list Node', 'k8s_get Namespace default', 'k8s_list Pod' (ohne Namespace), 'k8s_permissions'. Ergebnis ALT: 'Permission denied: cannot list Node', 'Permission denied: cannot get Namespace', 'Permission denied: cannot list Pod'; im Summary kein Cluster-Block. Ergebnis NEU: k8s_list Node liefert die 4 Nodes des Clusters (minun, pichu, plusle, raichu - deckt sich mit kubectl get nodes -o name), k8s_get Namespace default liefert das Namespace-Objekt, k8s_list Pod ohne Namespace meldet 'namespace required: Pod is a namespaced resource, specify a namespace (available: cert-manager, cihq-zugang, cilium-secrets, default, dev-dbio, dev-sick, kube-node-lease, kube-public, kube-system, local-path-storage, monitoring, node-feature-discovery, ocp-system)', k8s_permissions zeigt zusaetzlich '## Cluster-scoped / Full cluster access (all resources, all verbs)'. Der cluster-scoped Zugriff geht ohne Namespace an den API-Server (im Tool wird kein namespace an die API uebergeben). Ausschliesslich gelesen: keine Writes, kein create/patch/delete/rollout/apply, dev-dbio- und dev-sick-Workloads wurden nicht angefasst.
+
+2026-10-19 21:14 Umgesetzt (Variante 1) und live verifiziert. Aenderung: (1) Permissions::discover schickt keinen Review ohne Namespace mehr; der Cluster-Scope wird aus den Namespace-Reviews abgeleitet - Schnittpunkt aller Reviews, mit can_do-Wildcard-Semantik, namespaced-Ressourcen ueber den Scope-Resolver (IO::K8s::Role::Namespaced bzw. namespaced-Flag der Discovery) herausgefiltert, '*' bleibt. (2) Die Tools nutzen _scope_context: cluster-scoped Kinds (Node, Namespace, CRDs) werden ohne Namespace gerufen und gegen den Cluster-Scope geprueft; ein namespaced Kind ohne aufloesbaren Namespace meldet 'namespace required: <Kind> is a namespaced resource, specify a namespace (available: ...)' statt 'Permission denied'. (3) Der Discovery-Cache (t/05, t/01) beantwortet einen Review ohne Namespace mit dem 400 des API-Servers ('no namespace on request'). Dateien: lib/MCP/K8s/Permissions.pm, lib/MCP/K8s.pm, t/01-permissions.t, t/05-server-tools.t, neu t/11-cluster-scope-rbac.t. Verifikation: prove -l t/ gruen (12 Files, 152 Tests); gegen das alte lib (git archive main lib + aktuelle t/) rot - t/01 4/33, t/05 1/46, t/11 6/7, ausschliesslich Verhaltens-Assertions, keine Ladefehler. Live gelesen (cihq, nur lesend): vorher 'Permission denied: cannot list Node'/'cannot get Namespace', nachher Nodes und Namespace geliefert, Pod ohne Namespace meldet 'namespace required', Summary zeigt '## Cluster-scoped'. Kein Commit, kein Push - der Baum ist commit-ready fuer das Release-Management.
+
+2026-10-19 21:20 2026-10-19 23:35 Koordinator: Uebernommen und gemerged. Commit c9a11cb 'Derive the cluster scope from the namespace reviews (k20)' auf local main (ff). Verifikation des Koordinators: prove -lr t/ -> 12 Dateien, 152 Tests PASS; rot gegen das alte lib (git archive main lib + aktuelle t/) -> t/01 4/33, t/05 1/46, t/11 6/7, ausschliesslich Verhaltens-Assertions. Diff geprueft (Permissions.pm, K8s.pm, drei Testdateien, Changes) - die Ableitung aus dem Schnittpunkt der Namespace-Reviews, der Scope-Resolver ueber IO::K8s::Role::Namespaced und das namespaced-Flag der Discovery, und die Meldung 'namespace required' statt 'Permission denied' passen zur Karte. Kein Push; local main ist 4 Commits vor origin/main.
