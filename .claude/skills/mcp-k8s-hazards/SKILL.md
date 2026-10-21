@@ -22,6 +22,9 @@ pflegen muss, während RBAC die Wahrheit am Cluster bleibt.
 
 - **Keine application-side Filterung einbauen.** Wer Geheimnisse vom LLM fernhalten
   will, schränkt das Role ein — das ist ein Rollout, kein Patch.
+- **Jeder Tool-Call prüft vorher `can_do` — auch dann, wenn die API-Antwort ohnehin
+  403 wäre.** Die vorangehende Prüfung ist das, was dem LLM eine lesbare Absage
+  statt eines Stacktraces gibt; ohne sie sieht der Fehler wie ein Serverdefekt aus.
 - **Ein Wunsch wie „hide secrets from the LLM in the server" ist ein Ticket**, kein
   Refactoring. Er verändert die Sicherheitsarchitektur und gehört vor den
   Maintainer.
@@ -67,6 +70,8 @@ umgeschrieben, in `_update_tool_descriptions` (Guard `_descriptions_updated`),
   unsichtbar.
 - **Beschreibungen nicht "aufräumen"**: bei >10 Ressourcen wird auf 10 + `...`
   gekürzt, bei `*` steht „all resources".
+- **Das Beispiel, das sie erzeugen:** „Available: default: pods, deployments;
+  production: pods" — so erfährt das LLM, was es je Namespace antrifft, statt zu raten.
 
 ## 6. Plural-Tier 3 schluckt jeden Fehler — by design
 
