@@ -227,7 +227,8 @@ dzil release
 
 `[@Author::GETTY]` bumpt `$VERSION`, taggt und legt das GitHub-Release an. Mechanik:
 skill `getty-perl-release-author-getty`. Release nur mit ausdrücklicher Freigabe des
-Maintainers — siehe `.claude/rules/mcp-k8s-rules.md`.
+Maintainers — siehe die geteilte Regel `getty-publish-gate` (skilletor-Bundle
+`getty-cpan-dist@getty`).
 
 ## Sharp Edges (für Entwickler)
 
@@ -264,7 +265,8 @@ Maintainers — siehe `.claude/rules/mcp-k8s-rules.md`.
 ## Delegation
 
 Delegate behavior-relevant code to the right agent instead of touching it yourself —
-principle and lane are in `.claude/rules/mcp-k8s-rules.md`.
+the delegation lock and the publish gate are shared house rules (skilletor bundle
+`getty-cpan-dist@getty`); lanes and hazards are in `.claude/rules/mcp-k8s-rules.md`.
 
 | Task | Agent |
 |---|---|
