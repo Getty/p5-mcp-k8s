@@ -1,3 +1,5 @@
+{{$NEXT}}
+
 0.004     2026-10-31 01:38:48Z
   - Fix cluster-scoped permissions being empty. The RBAC discovery sent a
     SelfSubjectRulesReview without a namespace, which the API server
