@@ -2,6 +2,8 @@
 # PODNAME: mcp-k8s
 # ABSTRACT: MCP Server for Kubernetes with RBAC-aware dynamic tools
 
+our $VERSION = '0.005';
+
 use strict;
 use warnings;
 use MCP::K8s;
