@@ -226,7 +226,7 @@ dzil release
 
 `[@Author::GETTY]` bumps `$VERSION`, tags and creates the GitHub release. Mechanics:
 skill `getty-perl-release-author-getty`. Release only with the maintainer's explicit
-go-ahead — see the shared rule `getty-publish-gate` (skilletor bundle
+go-ahead — see the shared rule `publish-gate` (skilletor bundle
 `getty-cpan-dist@getty`).
 
 ## Sharp Edges (for developers)
